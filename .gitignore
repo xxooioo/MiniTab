@@ -1,0 +1,52 @@
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+.venv
+
+# Node.js (如果将来使用)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# 日志
+*.log
+logs/
+
+# 临时文件
+*.tmp
+*.bak
+*.cache
+
+# 打包文件
+*.zip
+*.crx
+*.pem
+dist/
+build/
+
+# 用户上传的背景图片（隐私）
+user_backgrounds/
+
+# 测试
+coverage/
+.nyc_output/
+
