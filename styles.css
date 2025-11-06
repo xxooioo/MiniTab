@@ -455,7 +455,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 100px;
+  max-width: 200px;
   display: block;
 }
 
@@ -717,7 +717,7 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   width: 100%;
-  max-width: 100px;
+  max-width: 200px;
 }
 
 /* 右键菜单 */
