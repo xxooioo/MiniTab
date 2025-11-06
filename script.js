@@ -931,9 +931,15 @@ const UI = {
         link.style.cursor = 'pointer'; // 显示手型光标
         
         // 点击打开链接
-        link.addEventListener('click', (e) => {
+        link.addEventListener('click', async (e) => {
           e.preventDefault();
-          window.open(shortcut.url, '_blank', 'noopener,noreferrer');
+          try {
+            const tabs = await chrome.tabs.query({});
+            const lastIndex = tabs.length;
+            chrome.tabs.create({ url: shortcut.url, index: lastIndex });
+          } catch {
+            window.open(shortcut.url, '_blank', 'noopener,noreferrer');
+          }
         });
 
         const icon = document.createElement('img');
@@ -1192,11 +1198,17 @@ const UI = {
       });
       
       // 在父元素上处理点击
-      shortcutItem.addEventListener('click', (e) => {
+      shortcutItem.addEventListener('click', async (e) => {
         const clickDuration = Date.now() - dragStartTime;
         // 只有在短时间点击（不是拖动）且没有正在拖动时才打开链接
         if (!isDragging && clickDuration < 300 && !State.draggedItem) {
-          window.open(item.url, '_blank', 'noopener,noreferrer');
+          try {
+            const tabs = await chrome.tabs.query({});
+            const lastIndex = tabs.length;
+            chrome.tabs.create({ url: item.url, index: lastIndex });
+          } catch {
+            window.open(item.url, '_blank', 'noopener,noreferrer');
+          }
         }
         e.preventDefault();
       });
