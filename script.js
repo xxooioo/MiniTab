@@ -69,7 +69,8 @@ const State = {
   countdownInterval: null, // 倒计时interval
   draggedItem: null, // 拖拽的元素
   dropTarget: null, // 放置目标
-  lastFolderMovePosition: null // 记录上次文件夹移动位置，防止重复触发
+  lastFolderMovePosition: null, // 记录上次文件夹移动位置，防止重复触发
+  draggingTab: false // 是否正在拖拽标签页
 };
 
 // 将 State 暴露到全局作用域，供 drag-handler.js 使用
@@ -787,9 +788,11 @@ const UI = {
     tabsList.innerHTML = '';
 
     // 渲染现有标签页
-    State.tabs.forEach((tab) => {
+    State.tabs.forEach((tab, index) => {
       const tabItem = document.createElement('div');
       tabItem.className = `tab-item${tab.id === State.currentTabId ? ' active' : ''}`;
+      tabItem.dataset.index = index;
+      tabItem.dataset.tabId = tab.id;
       
       // 显示标签页名称
       const tabName = document.createElement('span');
@@ -797,8 +800,32 @@ const UI = {
       tabName.textContent = tab.name;
       tabItem.appendChild(tabName);
 
-      // 点击切换
-      tabItem.onclick = () => TabManager.switchTab(tab.id);
+      // 添加拖拽属性
+      tabItem.draggable = true;
+      
+      tabItem.addEventListener('dragstart', (e) => {
+        State.draggingTab = true;
+        TabManager.handleTabDragStart(e, index);
+      });
+      
+      tabItem.addEventListener('dragover', (e) => TabManager.handleTabDragOver(e, index));
+      tabItem.addEventListener('dragleave', (e) => TabManager.handleTabDragLeave(e));
+      tabItem.addEventListener('drop', (e) => TabManager.handleTabDrop(e, index));
+      
+      tabItem.addEventListener('dragend', (e) => {
+        // 延迟重置，确保drop事件先执行
+        setTimeout(() => {
+          State.draggingTab = false;
+        }, 0);
+        TabManager.handleTabDragEnd(e);
+      });
+
+      // 点击切换（拖拽时不触发）
+      tabItem.onclick = (e) => {
+        if (!State.draggingTab) {
+          TabManager.switchTab(tab.id);
+        }
+      };
 
       // 右键菜单（重命名/删除）
       tabItem.oncontextmenu = (e) => {
@@ -1515,6 +1542,174 @@ const TabManager = {
       UI.renderTabs();
       this.loadCurrentTabShortcuts();
     });
+  },
+
+  // 标签页拖拽处理
+  draggedTabIndex: null,
+  draggedTabElement: null,
+
+  handleTabDragStart(e, index) {
+    this.draggedTabIndex = index;
+    this.draggedTabElement = e.currentTarget;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', index);
+    
+    // 添加拖拽样式
+    setTimeout(() => {
+      if (this.draggedTabElement) {
+        this.draggedTabElement.classList.add('dragging');
+      }
+    }, 0);
+  },
+
+  handleTabDragOver(e, index) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    
+    if (this.draggedTabIndex === null || this.draggedTabIndex === index) return;
+    
+    const tabsList = Utils.getElement('tabsList');
+    if (!tabsList) return;
+    
+    const targetElement = e.currentTarget;
+    if (!targetElement || targetElement === this.draggedTabElement) return;
+    
+    const children = Array.from(tabsList.children).filter(
+      child => !child.classList.contains('tab-add-btn')
+    );
+    
+    const currentIndex = children.indexOf(this.draggedTabElement);
+    const actualTargetIndex = children.indexOf(targetElement);
+    
+    if (currentIndex === -1 || actualTargetIndex === -1) return;
+    if (currentIndex === actualTargetIndex) return;
+    
+    // 计算目标位置（纵向列表，使用Y坐标判断）
+    const rect = targetElement.getBoundingClientRect();
+    const targetCenterY = rect.top + rect.height / 2;
+    const insertBefore = e.clientY < targetCenterY;
+    
+    // 计算目标位置
+    let targetPosition;
+    if (insertBefore) {
+      targetPosition = actualTargetIndex;
+    } else {
+      targetPosition = actualTargetIndex + 1;
+    }
+    
+    // 调整目标位置（如果拖拽元素在前面，目标位置需要-1）
+    if (currentIndex < targetPosition) {
+      targetPosition--;
+    }
+    
+    // 如果位置没变，不执行移动
+    if (currentIndex === targetPosition) return;
+    
+    // 执行DOM移动
+    if (insertBefore) {
+      tabsList.insertBefore(this.draggedTabElement, targetElement);
+    } else {
+      const nextElement = targetElement.nextSibling;
+      if (nextElement && nextElement !== this.draggedTabElement) {
+        tabsList.insertBefore(this.draggedTabElement, nextElement);
+      } else if (!nextElement) {
+        // 如果目标元素是最后一个，插入到"新增标签页"按钮之前
+        const addBtn = tabsList.querySelector('.tab-add-btn');
+        if (addBtn) {
+          tabsList.insertBefore(this.draggedTabElement, addBtn);
+        } else {
+          tabsList.appendChild(this.draggedTabElement);
+        }
+      }
+    }
+    
+    // 更新索引
+    this.draggedTabIndex = targetPosition;
+    
+    // 添加高亮样式
+    targetElement.classList.add('drag-over');
+  },
+
+  handleTabDragLeave(e) {
+    e.currentTarget.classList.remove('drag-over');
+  },
+
+  async handleTabDrop(e, targetIndex) {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // 清除所有高亮
+    document.querySelectorAll('.tab-item.drag-over').forEach(el => {
+      el.classList.remove('drag-over');
+    });
+    
+    if (this.draggedTabIndex === null) {
+      return;
+    }
+    
+    // 根据DOM顺序更新State.tabs数组
+    const tabsList = Utils.getElement('tabsList');
+    if (!tabsList) return;
+    
+    const children = Array.from(tabsList.children).filter(
+      child => !child.classList.contains('tab-add-btn')
+    );
+    
+    // 创建新的标签页顺序数组
+    const newTabsOrder = [];
+    children.forEach(child => {
+      const tabId = child.dataset.tabId;
+      const tab = State.tabs.find(t => t.id === tabId);
+      if (tab) {
+        newTabsOrder.push(tab);
+      }
+    });
+    
+    // 检查顺序是否真的改变了
+    if (newTabsOrder.length !== State.tabs.length) {
+      Logger.warn('Tab order mismatch, skipping update');
+      return;
+    }
+    
+    // 检查顺序是否改变
+    let orderChanged = false;
+    for (let i = 0; i < newTabsOrder.length; i++) {
+      if (newTabsOrder[i].id !== State.tabs[i].id) {
+        orderChanged = true;
+        break;
+      }
+    }
+    
+    if (!orderChanged) {
+      return;
+    }
+    
+    // 更新State.tabs
+    State.tabs = newTabsOrder;
+    
+    // 保存到storage
+    await Storage.saveTabs();
+    
+    // 重新渲染以确保索引正确
+    UI.renderTabs();
+  },
+
+  handleTabDragEnd(e) {
+    // 移除拖拽样式
+    if (this.draggedTabElement) {
+      this.draggedTabElement.classList.remove('dragging');
+    }
+    
+    // 清除所有高亮
+    document.querySelectorAll('.tab-item.drag-over').forEach(el => {
+      el.classList.remove('drag-over');
+    });
+    
+    // 重置状态
+    setTimeout(() => {
+      this.draggedTabIndex = null;
+      this.draggedTabElement = null;
+    }, 0);
   }
 };
 
@@ -3119,6 +3314,122 @@ const BackupManager = {
     }
   },
   
+  // 显示导入方式选择对话框
+  showImportModeDialog(backupData, validTabs) {
+    return new Promise((resolve) => {
+      // 创建模态框
+      const modal = document.createElement('div');
+      modal.className = 'modal import-mode-modal';
+      modal.style.display = 'flex';
+      
+      const content = document.createElement('div');
+      content.className = 'modal-content';
+      content.style.maxWidth = '500px';
+      
+      const backupTime = backupData.exportTime ? new Date(backupData.exportTime).toLocaleString('zh-CN') : '未知';
+      const tabsCount = validTabs.length;
+      const shortcutsCount = validTabs.reduce((sum, tab) => sum + (tab.shortcuts?.length || 0), 0);
+      const currentTabsCount = State.tabs.length;
+      const currentShortcutsCount = State.tabs.reduce((sum, tab) => sum + (tab.shortcuts?.length || 0), 0);
+      
+      content.innerHTML = `
+        <div class="modal-header">
+          <h3>恢复数据</h3>
+        </div>
+        <div class="modal-body">
+          <div style="margin-bottom: 20px;">
+            <p><strong>备份信息：</strong></p>
+            <p>备份时间：${backupTime}</p>
+            <p>标签页数量：${tabsCount}</p>
+            <p>快捷方式总数：${shortcutsCount}</p>
+          </div>
+          <div style="margin-bottom: 20px;">
+            <p><strong>当前数据：</strong></p>
+            <p>标签页数量：${currentTabsCount}</p>
+            <p>快捷方式总数：${currentShortcutsCount}</p>
+          </div>
+          <div style="margin-bottom: 20px;">
+            <p><strong>请选择导入方式：</strong></p>
+          </div>
+          <div style="display: flex; gap: 12px; flex-direction: column;">
+            <button class="btn btn-secondary import-mode-btn" data-mode="replace" style="justify-content: flex-start; text-align: left;">
+              <div style="font-weight: 600; margin-bottom: 4px;">覆盖现有数据</div>
+              <div style="font-size: 12px; opacity: 0.8;">删除所有现有数据，用备份数据替换</div>
+            </button>
+            <button class="btn btn-secondary import-mode-btn" data-mode="merge" style="justify-content: flex-start; text-align: left;">
+              <div style="font-weight: 600; margin-bottom: 4px;">合并到现有数据</div>
+              <div style="font-size: 12px; opacity: 0.8;">将备份数据追加到现有数据后面</div>
+            </button>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="cancelImportBtn">取消</button>
+          <button class="btn btn-primary" id="confirmImportBtn" disabled>确定</button>
+        </div>
+      `;
+      
+      modal.appendChild(content);
+      document.body.appendChild(modal);
+      
+      let selectedMode = null;
+      const confirmBtn = content.querySelector('#confirmImportBtn');
+      const cancelBtn = content.querySelector('#cancelImportBtn');
+      
+      if (!confirmBtn || !cancelBtn) {
+        Logger.error('Import dialog buttons not found');
+        modal.remove();
+        resolve(null);
+        return;
+      }
+      
+      // 点击背景关闭
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+          modal.remove();
+          resolve(null);
+        }
+      });
+      
+      // 取消按钮
+      cancelBtn.addEventListener('click', () => {
+        modal.remove();
+        resolve(null);
+      });
+      
+      // 选择导入方式
+      const modeButtons = content.querySelectorAll('.import-mode-btn');
+      modeButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+          // 移除所有按钮的选中状态
+          modeButtons.forEach(b => {
+            b.classList.remove('btn-primary');
+            b.classList.add('btn-secondary');
+          });
+          
+          // 选中当前按钮
+          btn.classList.remove('btn-secondary');
+          btn.classList.add('btn-primary');
+          
+          // 保存选中的模式
+          selectedMode = btn.dataset.mode;
+          
+          // 启用确定按钮
+          if (confirmBtn) {
+            confirmBtn.disabled = false;
+          }
+        });
+      });
+      
+      // 确定按钮
+      confirmBtn.addEventListener('click', () => {
+        if (selectedMode) {
+          modal.remove();
+          resolve(selectedMode);
+        }
+      });
+    });
+  },
+
   // 导入数据
   async importData(file) {
     try {
@@ -3143,27 +3454,46 @@ const BackupManager = {
         throw new Error('备份文件中没有有效的标签页数据');
       }
       
-      // 确认导入
-      const confirmed = confirm(
-        `确定要导入备份数据吗？\n\n` +
-        `备份时间：${backupData.exportTime ? new Date(backupData.exportTime).toLocaleString('zh-CN') : '未知'}\n` +
-        `标签页数量：${validTabs.length}\n` +
-        `快捷方式总数：${validTabs.reduce((sum, tab) => sum + (tab.shortcuts?.length || 0), 0)}\n\n` +
-        `⚠️ 当前数据将被覆盖！`
-      );
+      // 显示导入方式选择对话框
+      const importMode = await this.showImportModeDialog(backupData, validTabs);
       
-      if (!confirmed) {
+      if (!importMode) {
+        // 用户取消了导入
         return;
       }
       
-      // 清空现有数据
-      await chrome.storage.local.clear();
-      
-      // 导入新数据
-      await chrome.storage.local.set(backupData.data);
-      
-      // 显示成功提示（使用统一的 Toast 系统）
-      Toast.success('数据已导入，即将刷新页面...');
+      if (importMode === 'replace') {
+        // 覆盖模式：清空现有数据
+        await chrome.storage.local.clear();
+        await chrome.storage.local.set(backupData.data);
+        Toast.success('数据已导入（覆盖模式），即将刷新页面...');
+      } else if (importMode === 'merge') {
+        // 合并模式：追加到现有数据
+        const currentTabs = State.tabs;
+        
+        // 确保导入的标签页和快捷方式都有唯一ID
+        validTabs.forEach(tab => {
+          Utils.ensureShortcutId(tab);
+          if (tab.shortcuts) {
+            Utils.ensureShortcutIds(tab.shortcuts);
+          }
+        });
+        
+        // 合并标签页
+        const mergedTabs = [...currentTabs, ...validTabs];
+        
+        // 获取当前所有数据，只更新tabs，保留其他设置
+        const currentData = await chrome.storage.local.get(null);
+        
+        // 保存合并后的数据（只更新tabs，保留其他所有数据）
+        await chrome.storage.local.set({
+          ...currentData,
+          tabs: mergedTabs
+          // 保留 currentTabId 和其他设置不变
+        });
+        
+        Toast.success(`数据已导入（合并模式），已添加 ${validTabs.length} 个标签页，即将刷新页面...`);
+      }
       
       // 2秒后刷新页面
       setTimeout(() => {
@@ -3177,6 +3507,72 @@ const BackupManager = {
     }
   },
 
+  // 显示书签导入确认对话框
+  showBookmarkImportDialog() {
+    return new Promise((resolve) => {
+      // 创建模态框
+      const modal = document.createElement('div');
+      modal.className = 'modal import-mode-modal';
+      modal.style.display = 'flex';
+      
+      const content = document.createElement('div');
+      content.className = 'modal-content';
+      content.style.maxWidth = '500px';
+      
+      content.innerHTML = `
+        <div class="modal-header">
+          <h3>导入浏览器书签</h3>
+        </div>
+        <div class="modal-body">
+          <div style="margin-bottom: 20px;">
+            <p style="margin-bottom: 8px;"><strong>导入说明：</strong></p>
+            <p style="margin-bottom: 8px;">• 书签将被添加至当前标签页</p>
+            <p style="margin-bottom: 8px;">• 书签中的文件夹（无论层级）将被转换为分组形式</p>
+            <p style="margin-bottom: 8px;">• 当前标签页的快捷方式将被保留，导入的书签会追加到后面</p>
+
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="cancelBookmarkImportBtn">取消</button>
+          <button class="btn btn-primary" id="confirmBookmarkImportBtn">确定</button>
+        </div>
+      `;
+      
+      modal.appendChild(content);
+      document.body.appendChild(modal);
+      
+      // 点击背景关闭
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+          modal.remove();
+          resolve(false);
+        }
+      });
+      
+      // 取消按钮
+      const cancelBtn = content.querySelector('#cancelBookmarkImportBtn');
+      const confirmBtn = content.querySelector('#confirmBookmarkImportBtn');
+      
+      if (!cancelBtn || !confirmBtn) {
+        Logger.error('Bookmark import dialog buttons not found');
+        modal.remove();
+        resolve(false);
+        return;
+      }
+      
+      cancelBtn.addEventListener('click', () => {
+        modal.remove();
+        resolve(false);
+      });
+      
+      // 确认按钮
+      confirmBtn.addEventListener('click', () => {
+        modal.remove();
+        resolve(true);
+      });
+    });
+  },
+
   // 从浏览器书签导入
   async importBookmarks() {
     try {
@@ -3186,12 +3582,8 @@ const BackupManager = {
         return;
       }
 
-      // 确认导入
-      const confirmed = confirm(
-        `确定要从浏览器书签导入吗？\n\n` +
-        `⚠️ 所有文件夹（无论层级）都将转换为分组，添加到当前标签页。\n` +
-        `当前标签页的快捷方式将被保留，新导入的内容会追加到后面。`
-      );
+      // 显示确认对话框
+      const confirmed = await this.showBookmarkImportDialog();
 
       if (!confirmed) {
         return;

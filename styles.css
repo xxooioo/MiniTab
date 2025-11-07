@@ -276,6 +276,49 @@ body {
   opacity: 1;
 }
 
+/* 标签页拖拽样式 */
+.tab-item.dragging {
+  opacity: 0.5;
+  transform: scale(0.95);
+  cursor: grabbing !important;
+}
+
+.tab-item.drag-over {
+  border-color: rgba(var(--primary-rgb), 0.6) !important;
+  background: rgba(var(--primary-rgb), 0.1) !important;
+  transform: scale(1.02);
+}
+
+.tab-item[draggable="true"] {
+  cursor: grab;
+}
+
+.tab-item[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+/* 导入模式对话框样式 */
+.import-mode-modal .import-mode-btn {
+  padding: 16px;
+  border-radius: 12px;
+  transition: all 0.25s ease;
+}
+
+.import-mode-modal .import-mode-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.import-mode-modal .modal-body p {
+  margin: 4px 0;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 14px;
+}
+
+.import-mode-modal .modal-body p strong {
+  color: rgba(255, 255, 255, 1);
+}
+
 /* 标签页列表滚动条已通过全局样式隐藏 */
 
 .container {
