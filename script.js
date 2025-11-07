@@ -2239,8 +2239,6 @@ const ShortcutManager = {
     // 保存并更新显示
     await Storage.saveTabs();
     UI.renderShortcuts();
-    
-    Toast.success(`已移动到"${targetTab ? targetTab.name : '目标页面'}"`);
   },
 
   showContextMenu(index, event) {
@@ -3401,8 +3399,6 @@ const ShortcutManager = {
     }
     
     UI.renderShortcuts();
-    
-    Toast.success(`已移动到"${targetTab ? targetTab.name : '目标页面'}"`);
   },
 
   // 从分组中删除快捷方式

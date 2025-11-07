@@ -140,4 +140,4 @@
 
 ## 📮 联系
 
-- GitHub Issues: [提交问题](https://github.com/your-username/MiniTab/issues)
+- GitHub Issues: [提交问题](https://github.com/xxooioo/MiniTab/issues)
