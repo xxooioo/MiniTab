@@ -1307,10 +1307,10 @@ const UI = {
       // 右键菜单 - 使用 dataset 动态获取索引，而不是闭包
       shortcutItem.oncontextmenu = (e) => {
         e.preventDefault();
-        // 🔑 关键：从 dataset 动态读取当前索引，而不是使用闭包捕获的值
+        // 🔑 关键：从 dataset 动态读取当前 ID，而不是使用索引
         const currentFolderIndex = parseInt(e.currentTarget.dataset.folderIndex);
-        const currentItemIndex = parseInt(e.currentTarget.dataset.itemIndex);
-        this.showFolderItemContextMenu(currentFolderIndex, currentItemIndex, e);
+        const currentItemId = e.currentTarget.dataset.itemId;
+        this.showFolderItemContextMenu(currentFolderIndex, currentItemId, e);
       };
       
       shortcutItem.appendChild(link);
@@ -1319,7 +1319,7 @@ const UI = {
   },
 
   // 显示分组内快捷方式的右键菜单
-  showFolderItemContextMenu(folderIndex, itemIndex, event) {
+  showFolderItemContextMenu(folderIndex, itemId, event) {
     const existingMenu = document.querySelector('.context-menu');
     if (existingMenu) existingMenu.remove();
 
@@ -1356,13 +1356,13 @@ const UI = {
 
       const action = item.dataset.action;
       if (action === 'edit') {
-        ShortcutManager.editFolderItem(folderIndex, itemIndex);
+        ShortcutManager.editFolderItem(folderIndex, itemId);
       } else if (action === 'remove') {
-        ShortcutManager.removeFromFolder(folderIndex, itemIndex);
+        ShortcutManager.removeFromFolder(folderIndex, itemId);
       } else if (action === 'move') {
-        ShortcutManager.showMoveFolderItemToTabModal(folderIndex, itemIndex);
+        ShortcutManager.showMoveFolderItemToTabModal(folderIndex, itemId);
       } else if (action === 'delete') {
-        ShortcutManager.deleteFromFolder(folderIndex, itemIndex);
+        ShortcutManager.deleteFromFolder(folderIndex, itemId);
       }
 
       menu.remove();
@@ -2907,8 +2907,23 @@ const ShortcutManager = {
       const folder = State.shortcuts[dragData.folderIndex];
       
       if (folder && folder.type === 'folder') {
+        // 🔑 关键修复：使用唯一 ID 来查找要移除的项目，而不是使用索引
+        // 因为在拖拽过程中，DOM 顺序可能已经改变，itemIndex 可能不准确
+        const itemId = Utils.ensureShortcutId(dragData.item);
+        const actualIndex = folder.items.findIndex(item => Utils.ensureShortcutId(item) === itemId);
+        
+        if (actualIndex === -1) {
+          Logger.error('Cannot find item to remove from folder');
+          State.draggedItem = null;
+          return;
+        }
+        
         // 从分组中移除
-        const item = folder.items.splice(dragData.itemIndex, 1)[0];
+        const item = folder.items.splice(actualIndex, 1)[0];
+        
+        // 🔑 关键修复：先添加到主列表末尾，再判断是否解散分组
+        // 这样可以确保无论哪个分支，item 都不会丢失
+        State.shortcuts.push(item);
         
         // 检查分组是否还有足够的项目
         const shouldDismissFolder = folder.items.length <= 1;
@@ -2926,12 +2941,8 @@ const ShortcutManager = {
           UI.toggleFolderModal(false);
         } else {
           // 分组还有多个项目，保持弹窗打开，只刷新内容
-          await Storage.saveShortcuts();
           UI.renderFolderContent(folder);
         }
-        
-        // 添加到主列表末尾
-        State.shortcuts.push(item);
         
         // 保存并重新渲染主列表
         await Storage.saveShortcuts();
@@ -3111,9 +3122,16 @@ const ShortcutManager = {
   },
 
   // 编辑分组内的快捷方式
-  editFolderItem(folderIndex, itemIndex) {
+  editFolderItem(folderIndex, itemId) {
     const folder = State.shortcuts[folderIndex];
     if (!folder || folder.type !== 'folder') return;
+    
+    // 🔑 关键修复：使用 itemId 查找实际索引
+    const itemIndex = folder.items.findIndex(item => Utils.ensureShortcutId(item) === itemId);
+    if (itemIndex === -1) {
+      Logger.error('Item not found with id:', itemId);
+      return;
+    }
     
     const item = folder.items[itemIndex];
     if (!item) return;
@@ -3207,17 +3225,30 @@ const ShortcutManager = {
   },
 
   // 从分组中移出快捷方式(不删除,而是移到主列表)
-  async removeFromFolder(folderIndex, itemIndex) {
+  async removeFromFolder(folderIndex, itemId) {
     const folder = State.shortcuts[folderIndex];
     if (!folder || folder.type !== 'folder') return;
+    
+    // 🔑 关键修复：使用 itemId 查找实际索引
+    const itemIndex = folder.items.findIndex(item => Utils.ensureShortcutId(item) === itemId);
+    if (itemIndex === -1) {
+      Logger.error('Item not found with id:', itemId);
+      return;
+    }
     
     const removedItem = folder.items[itemIndex];
     
     // 从分组中移除
     folder.items.splice(itemIndex, 1);
     
+    // 🔑 关键修复：先添加到主列表，再判断是否解散分组
+    // 这样可以确保移出的项目不会丢失
+    State.shortcuts.push(removedItem);
+    
     // 如果分组只剩1个或0个,解散分组
-    if (folder.items.length <= 1) {
+    const shouldDismissFolder = folder.items.length <= 1;
+    
+    if (shouldDismissFolder) {
       const remainingItem = folder.items[0];
       if (remainingItem) {
         // 用剩余的单个快捷方式替换分组
@@ -3236,9 +3267,6 @@ const ShortcutManager = {
       UI.renderFolderContent(folder);
     }
     
-    // 添加到主列表末尾
-    State.shortcuts.push(removedItem);
-    
     await Storage.saveShortcuts();
     UI.renderShortcuts();
     
@@ -3246,16 +3274,23 @@ const ShortcutManager = {
   },
 
   // 显示移动分组内快捷方式到其他标签页的模态框
-  showMoveFolderItemToTabModal(folderIndex, itemIndex) {
+  showMoveFolderItemToTabModal(folderIndex, itemId) {
     // 🔑 关键优化：直接复用外部快捷方式的移动模态框逻辑
     // 创建一个包装函数，将分组内的移动操作适配到外部的移动函数
-    this.showMoveToTabModalForFolderItem(folderIndex, itemIndex);
+    this.showMoveToTabModalForFolderItem(folderIndex, itemId);
   },
 
   // 显示移动到标签页的模态框（适配分组内快捷方式）
-  showMoveToTabModalForFolderItem(folderIndex, itemIndex) {
+  showMoveToTabModalForFolderItem(folderIndex, itemId) {
     const folder = State.shortcuts[folderIndex];
     if (!folder || folder.type !== 'folder') return;
+    
+    // 🔑 关键修复：使用 itemId 查找实际索引
+    const itemIndex = folder.items.findIndex(item => Utils.ensureShortcutId(item) === itemId);
+    if (itemIndex === -1) {
+      Logger.error('Item not found with id:', itemId);
+      return;
+    }
     
     const item = folder.items[itemIndex];
     if (!item) return;
@@ -3319,7 +3354,7 @@ const ShortcutManager = {
       });
       
       tabItem.addEventListener('click', () => {
-        this.moveFolderItemToTab(folderIndex, itemIndex, tab.id);
+        this.moveFolderItemToTab(folderIndex, itemId, tab.id);
         modal.remove();
       });
       
@@ -3357,9 +3392,16 @@ const ShortcutManager = {
   },
 
   // 移动分组内快捷方式到指定标签页
-  async moveFolderItemToTab(folderIndex, itemIndex, targetTabId) {
+  async moveFolderItemToTab(folderIndex, itemId, targetTabId) {
     const folder = State.shortcuts[folderIndex];
     if (!folder || folder.type !== 'folder') return;
+    
+    // 🔑 关键修复：使用 itemId 查找实际索引
+    const itemIndex = folder.items.findIndex(item => Utils.ensureShortcutId(item) === itemId);
+    if (itemIndex === -1) {
+      Logger.error('Item not found with id:', itemId);
+      return;
+    }
     
     const item = folder.items[itemIndex];
     if (!item) return;
@@ -3367,9 +3409,18 @@ const ShortcutManager = {
     // 从分组中移除
     folder.items.splice(itemIndex, 1);
     
-    // 如果分组为空，删除分组
-    if (folder.items.length === 0) {
-      State.shortcuts.splice(folderIndex, 1);
+    // 🔑 关键修复：判断是否需要解散分组（剩余 ≤ 1 个项目）
+    const shouldDismissFolder = folder.items.length <= 1;
+    
+    if (shouldDismissFolder) {
+      const remainingItem = folder.items[0];
+      if (remainingItem) {
+        // 用剩余的单个快捷方式替换分组
+        State.shortcuts[folderIndex] = remainingItem;
+      } else {
+        // 没有剩余项,删除分组
+        State.shortcuts.splice(folderIndex, 1);
+      }
     }
     
     // 🔑 关键修复：先同步当前标签页的 shortcuts 到 State.tabs
@@ -3390,8 +3441,8 @@ const ShortcutManager = {
     // 保存并更新显示
     await Storage.saveTabs();
     
-    // 如果分组被删除，关闭分组弹窗
-    if (folder.items.length === 0) {
+    // 如果分组被解散，关闭分组弹窗
+    if (shouldDismissFolder) {
       UI.toggleFolderModal(false);
     } else {
       // 否则重新渲染分组内容
@@ -3402,9 +3453,16 @@ const ShortcutManager = {
   },
 
   // 从分组中删除快捷方式
-  async deleteFromFolder(folderIndex, itemIndex) {
+  async deleteFromFolder(folderIndex, itemId) {
     const folder = State.shortcuts[folderIndex];
     if (!folder || folder.type !== 'folder') return;
+    
+    // 🔑 关键修复：使用 itemId 查找实际索引
+    const itemIndex = folder.items.findIndex(item => Utils.ensureShortcutId(item) === itemId);
+    if (itemIndex === -1) {
+      Logger.error('Item not found with id:', itemId);
+      return;
+    }
     
     const deletedItem = folder.items[itemIndex];
     
