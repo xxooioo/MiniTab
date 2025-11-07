@@ -3175,6 +3175,158 @@ const BackupManager = {
       // 使用统一的 Toast 系统
       Toast.error(`导入失败：${error.message}`);
     }
+  },
+
+  // 从浏览器书签导入
+  async importBookmarks() {
+    try {
+      // 检查权限
+      if (!chrome.bookmarks) {
+        Toast.error('无法访问浏览器书签，请检查扩展权限');
+        return;
+      }
+
+      // 确认导入
+      const confirmed = confirm(
+        `确定要从浏览器书签导入吗？\n\n` +
+        `⚠️ 所有文件夹（无论层级）都将转换为分组，添加到当前标签页。\n` +
+        `当前标签页的快捷方式将被保留，新导入的内容会追加到后面。`
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      // 获取书签树
+      const bookmarkTree = await chrome.bookmarks.getTree();
+      
+      if (!bookmarkTree || bookmarkTree.length === 0) {
+        Toast.warning('未找到任何书签');
+        return;
+      }
+
+      // 递归处理书签树，只导入有直接书签的文件夹作为分组
+      const shortcuts = [];
+      
+      // 收集文件夹内的直接书签（不递归嵌套文件夹）
+      const collectDirectBookmarks = (node) => {
+        const bookmarks = [];
+        
+        if (!node.children) {
+          return bookmarks;
+        }
+        
+        node.children.forEach(child => {
+          if (child.url) {
+            // 只收集直接书签，不处理嵌套文件夹
+            bookmarks.push({
+              name: child.title || '未命名',
+              url: child.url,
+              icon: ''
+            });
+          }
+        });
+        
+        return bookmarks;
+      };
+      
+      const processBookmarkNode = (node) => {
+        // 跳过根节点（"书签栏"、"其他书签"等）
+        // Chrome书签API的根节点ID通常是 '0'（书签栏）、'1'（其他书签）、'2'（移动设备书签）
+        if (node.id === '0' || node.id === '1' || node.id === '2') {
+          // 处理子节点
+          if (node.children) {
+            node.children.forEach(child => processBookmarkNode(child));
+          }
+          return;
+        }
+
+        // 如果是文件夹
+        if (node.children) {
+          // 只收集文件夹内的直接书签（不包括嵌套文件夹中的书签）
+          const folderItems = collectDirectBookmarks(node);
+          
+          // 只有当文件夹有直接书签时，才创建分组
+          if (folderItems.length > 0) {
+            shortcuts.push({
+              type: 'folder',
+              name: node.title || '未命名分组',
+              items: folderItems
+            });
+          }
+          
+          // 继续处理子节点中的嵌套文件夹（它们会单独成为分组）
+          node.children.forEach(child => {
+            if (child.children) {
+              processBookmarkNode(child);
+            }
+          });
+        } else if (node.url) {
+          // 普通书签（不在文件夹中）
+          shortcuts.push({
+            name: node.title || '未命名',
+            url: node.url,
+            icon: ''
+          });
+        }
+      };
+
+      // 处理所有书签
+      bookmarkTree.forEach(root => processBookmarkNode(root));
+
+      if (shortcuts.length === 0) {
+        Toast.warning('未找到可导入的书签');
+        return;
+      }
+
+      // 添加到当前标签页
+      const currentTab = State.tabs.find(t => t.id === State.currentTabId);
+      if (!currentTab) {
+        Toast.error('未找到当前标签页');
+        return;
+      }
+
+      // 确保所有导入的快捷方式都有唯一ID
+      shortcuts.forEach(shortcut => {
+        Utils.ensureShortcutId(shortcut);
+        if (shortcut.type === 'folder' && shortcut.items) {
+          shortcut.items.forEach(item => Utils.ensureShortcutId(item));
+        }
+      });
+      
+      // 追加到现有快捷方式后面
+      State.shortcuts = [...State.shortcuts, ...shortcuts];
+      
+      // 保存
+      await Storage.saveShortcuts();
+      
+      // 重新渲染
+      UI.renderShortcuts();
+
+      // 统计信息
+      const folderCount = shortcuts.filter(s => s.type === 'folder').length;
+      const bookmarkCount = shortcuts.filter(s => !s.type || s.type !== 'folder').length;
+      const totalInFolders = shortcuts
+        .filter(s => s.type === 'folder')
+        .reduce((sum, f) => sum + (f.items?.length || 0), 0);
+
+      Toast.success(
+        `导入成功！\n` +
+        `分组：${folderCount} 个\n` +
+        `快捷方式：${bookmarkCount + totalInFolders} 个`,
+        4000
+      );
+
+      Logger.debug('Bookmarks imported:', {
+        folders: folderCount,
+        shortcuts: bookmarkCount,
+        itemsInFolders: totalInFolders
+      });
+
+    } catch (error) {
+      Logger.error('Import bookmarks error:', error);
+      Toast.error(`导入失败：${error.message}`);
+    }
   }
 };
 
@@ -4029,6 +4181,7 @@ const Events = {
     // ✅ 数据备份按钮
     const exportDataBtn = Utils.getElement('exportDataBtn');
     const importDataBtn = Utils.getElement('importDataBtn');
+    const importBookmarksBtn = Utils.getElement('importBookmarksBtn');
     const dataImport = Utils.getElement('dataImport');
 
     if (exportDataBtn) {
@@ -4049,6 +4202,12 @@ const Events = {
           // 清空文件选择，允许重复选择同一文件
           dataImport.value = '';
         }
+      });
+    }
+
+    if (importBookmarksBtn) {
+      importBookmarksBtn.addEventListener('click', () => {
+        BackupManager.importBookmarks();
       });
     }
 
