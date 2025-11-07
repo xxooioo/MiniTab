@@ -960,27 +960,32 @@ const UI = {
         link.style.cursor = 'pointer'; // 显示手型光标
         
         // 打开链接的通用函数
-        const openLink = async () => {
+        // inBackground: true 表示在后台打开，不切换到新标签页
+        const openLink = async (inBackground = false) => {
           try {
             const tabs = await chrome.tabs.query({});
             const lastIndex = tabs.length;
-            chrome.tabs.create({ url: shortcut.url, index: lastIndex });
+            chrome.tabs.create({ 
+              url: shortcut.url, 
+              index: lastIndex,
+              active: !inBackground // active: false 表示后台打开
+            });
           } catch {
             window.open(shortcut.url, '_blank', 'noopener,noreferrer');
           }
         };
         
-        // 左键点击打开链接
+        // 左键点击打开链接（切换到新标签页）
         link.addEventListener('click', async (e) => {
           e.preventDefault();
-          await openLink();
+          await openLink(false);
         });
         
-        // 中键（滚轮）点击打开链接 - 使用 auxclick 事件，在松开时触发
+        // 中键（滚轮）点击打开链接（后台打开，不切换）
         link.addEventListener('auxclick', async (e) => {
           if (e.button === 1) { // 中键
             e.preventDefault();
-            await openLink();
+            await openLink(true); // 后台打开
           }
         });
 
@@ -1246,34 +1251,39 @@ const UI = {
       });
       
       // 打开链接的通用函数
-      const openFolderItemLink = async () => {
+      // inBackground: true 表示在后台打开，不切换到新标签页
+      const openFolderItemLink = async (inBackground = false) => {
         try {
           const tabs = await chrome.tabs.query({});
           const lastIndex = tabs.length;
-          chrome.tabs.create({ url: item.url, index: lastIndex });
+          chrome.tabs.create({ 
+            url: item.url, 
+            index: lastIndex,
+            active: !inBackground // active: false 表示后台打开
+          });
         } catch {
           window.open(item.url, '_blank', 'noopener,noreferrer');
         }
       };
       
-      // 在父元素上处理左键点击
+      // 在父元素上处理左键点击（切换到新标签页）
       shortcutItem.addEventListener('click', async (e) => {
         const clickDuration = Date.now() - dragStartTime;
         // 只有在短时间点击（不是拖动）且没有正在拖动时才打开链接
         if (!isDragging && clickDuration < 300 && !State.draggedItem) {
-          await openFolderItemLink();
+          await openFolderItemLink(false);
         }
         e.preventDefault();
       });
       
-      // 在父元素上处理中键（滚轮）点击 - 使用 auxclick 事件，在松开时触发
+      // 在父元素上处理中键（滚轮）点击（后台打开，不切换）
       shortcutItem.addEventListener('auxclick', async (e) => {
         if (e.button === 1) { // 中键
           const clickDuration = Date.now() - dragStartTime;
           // 只有在不拖动时才打开链接
           if (!isDragging && clickDuration < 300 && !State.draggedItem) {
             e.preventDefault();
-            await openFolderItemLink();
+            await openFolderItemLink(true); // 后台打开
           }
         }
       });
