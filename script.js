@@ -976,8 +976,8 @@ const UI = {
           await openLink();
         });
         
-        // 中键（滚轮）点击打开链接
-        link.addEventListener('mousedown', async (e) => {
+        // 中键（滚轮）点击打开链接 - 使用 auxclick 事件，在松开时触发
+        link.addEventListener('auxclick', async (e) => {
           if (e.button === 1) { // 中键
             e.preventDefault();
             await openLink();
@@ -1266,8 +1266,8 @@ const UI = {
         e.preventDefault();
       });
       
-      // 在父元素上处理中键（滚轮）点击
-      shortcutItem.addEventListener('mousedown', async (e) => {
+      // 在父元素上处理中键（滚轮）点击 - 使用 auxclick 事件，在松开时触发
+      shortcutItem.addEventListener('auxclick', async (e) => {
         if (e.button === 1) { // 中键
           const clickDuration = Date.now() - dragStartTime;
           // 只有在不拖动时才打开链接
@@ -4965,6 +4965,92 @@ const Events = {
     });
   }
 };
+
+// ==================== 多标签页同步 ====================
+// 监听 chrome.storage 的变化，实现多标签页实时同步
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+  
+  Logger.debug('Storage changed:', changes);
+  
+  let needsUpdate = false;
+  
+  // 检查标签页数据是否变化
+  if (changes.tabs) {
+    const oldCurrentTabId = State.currentTabId; // 保存当前标签页ID
+    State.tabs = changes.tabs.newValue || [];
+    
+    // 检查当前标签页是否还存在
+    const currentTabStillExists = State.tabs.some(t => t.id === oldCurrentTabId);
+    if (!currentTabStillExists && State.tabs.length > 0) {
+      // 如果当前标签页被删除，切换到第一个标签页
+      State.currentTabId = State.tabs[0].id;
+    } else {
+      // 否则保持在当前标签页（不跟随其他页面切换）
+      State.currentTabId = oldCurrentTabId;
+    }
+    
+    needsUpdate = true;
+  }
+  
+  // ⚠️ 不同步 currentTabId - 每个页面保持自己的当前标签页
+  // 这样就不会出现"点击另一个页面时自动切换到新增页面"的问题
+  
+  // 检查背景设置是否变化
+  if (changes.backgroundType || changes.backgroundImage || changes.backgroundColor || changes.backgroundBlur) {
+    needsUpdate = true;
+  }
+  
+  // 检查搜索引擎设置是否变化
+  if (changes.searchEngine || changes.customSearchEngine) {
+    if (changes.searchEngine) {
+      State.currentEngine = changes.searchEngine.newValue || CONFIG.defaultSettings.searchEngine;
+    }
+    if (changes.customSearchEngine) {
+      State.customEngineUrl = changes.customSearchEngine.newValue || '';
+    }
+    needsUpdate = true;
+  }
+  
+  // 检查搜索框透明度是否变化
+  if (changes.searchOpacity) {
+    const searchContainer = document.querySelector('.search-container');
+    if (searchContainer) {
+      const opacity = changes.searchOpacity.newValue || CONFIG.defaultSettings.searchOpacity;
+      searchContainer.style.backgroundColor = `rgba(255, 255, 255, ${opacity / 10})`;
+    }
+  }
+  
+  // 检查网格列数是否变化
+  if (changes.gridColumns) {
+    needsUpdate = true;
+  }
+  
+  // 如果需要更新，重新渲染界面
+  if (needsUpdate) {
+    // 更新当前标签页的快捷方式
+    const currentTab = State.tabs.find(t => t.id === State.currentTabId);
+    if (currentTab) {
+      State.shortcuts = currentTab.shortcuts || [];
+    }
+    
+    // 重新渲染标签页和快捷方式
+    UI.renderTabs();
+    UI.renderShortcuts();
+    
+    // 如果背景设置变化，重新应用背景
+    if (changes.backgroundType || changes.backgroundImage || changes.backgroundColor || changes.backgroundBlur) {
+      Settings.applyBackground();
+    }
+    
+    // 如果网格列数变化，重新应用
+    if (changes.gridColumns) {
+      Settings.applyGridColumns();
+    }
+    
+    Logger.debug('UI updated due to storage changes');
+  }
+});
 
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', async () => {
