@@ -41,17 +41,13 @@ const Logger = {
 };
 
 // ==================== 全局错误处理 ====================
-// ✅ 添加全局错误捕获，防止页面崩溃
+// ✅ 添加全局错误捕获，记录错误日志
 window.addEventListener('error', (event) => {
-  Logger.error('Global error:', event.error);
-  // 防止错误继续传播导致页面崩溃
-  event.preventDefault();
+  Logger.error('Global error:', event.error || event.message, 'at', event.filename, 'line', event.lineno);
 });
 
 window.addEventListener('unhandledrejection', (event) => {
   Logger.error('Unhandled promise rejection:', event.reason);
-  // 防止 Promise 错误导致页面崩溃
-  event.preventDefault();
 });
 
 // ==================== 状态管理 ====================
@@ -318,7 +314,7 @@ const Utils = {
       // 如果不存在，渲染时的 onerror 处理会回退到 Google API
       return new URL('/favicon.ico', origin).href;
     } catch (error) {
-      Logger.log('从 URL 获取图标失败:', error);
+      Logger.debug('从 URL 获取图标失败:', error);
     }
     return null;
   },
@@ -921,8 +917,14 @@ const UI = {
           miniIcon.draggable = false; // 防止图片阻止拖动
           const itemUrl = items[i].url;
           miniIcon.src = items[i].icon || Utils.getFaviconUrl(itemUrl);
-          miniIcon.onerror = () => {
-            miniIcon.src = Utils.getFaviconUrl(itemUrl);
+          miniIcon.onerror = function() {
+            if (!this.dataset.errorHandled) {
+              this.dataset.errorHandled = 'true';
+              this.src = Utils.getFaviconUrl(itemUrl);
+            } else {
+              // 使用默认占位图标，防止无限循环
+              this.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23ffffff"><circle cx="12" cy="12" r="10"/></svg>';
+            }
           };
           folderIcon.appendChild(miniIcon);
         }
@@ -974,8 +976,14 @@ const UI = {
         icon.src = shortcut.icon || Utils.getFaviconUrl(shortcut.url);
         icon.alt = shortcut.name;
         icon.draggable = false; // 防止图片阻止拖动
-        icon.onerror = () => {
-          icon.src = Utils.getFaviconUrl(shortcut.url);
+        icon.onerror = function() {
+          if (!this.dataset.errorHandled) {
+            this.dataset.errorHandled = 'true';
+            this.src = Utils.getFaviconUrl(shortcut.url);
+          } else {
+            // 使用默认占位图标，防止无限循环
+            this.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23ffffff"><circle cx="12" cy="12" r="10"/></svg>';
+          }
         };
 
         const name = document.createElement('div');
@@ -1249,8 +1257,14 @@ const UI = {
       icon.src = item.icon || Utils.getFaviconUrl(item.url);
       icon.alt = item.name;
       icon.draggable = false; // 防止图片阻止拖动
-      icon.onerror = () => {
-        icon.src = Utils.getFaviconUrl(item.url);
+      icon.onerror = function() {
+        if (!this.dataset.errorHandled) {
+          this.dataset.errorHandled = 'true';
+          this.src = Utils.getFaviconUrl(item.url);
+        } else {
+          // 使用默认占位图标，防止无限循环
+          this.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23ffffff"><circle cx="12" cy="12" r="10"/></svg>';
+        }
       };
       
       const name = document.createElement('div');
@@ -4130,14 +4144,8 @@ const Events = {
       } catch (error) {
         Logger.error('图标上传失败:', error);
         Toast.error('图标上传失败');
-        // 🔑 关键修复：异常后也要清空 input
         fileInput.value = '';
       }
-      
-      // 🔑 关键修复：只有在成功读取后才清空 input（移到这里，在 try-catch 外部）
-      // 注意：这里不能清空，因为文件读取是异步的，应该在 reader.onload 中清空
-      // 但是如果读取失败，已经在 reader.onerror 中清空了
-      // 所以这里不再需要清空，改为在 reader.onload 成功后清空
     });
     
     // 文字图标按钮
