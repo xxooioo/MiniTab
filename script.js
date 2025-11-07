@@ -1298,6 +1298,9 @@ const UI = {
     menu.style.left = event.pageX + 'px';
     menu.style.top = event.pageY + 'px';
 
+    // 判断是否显示"移动"选项（需要有多个标签页）
+    const showMove = State.tabs.length > 1;
+
     menu.innerHTML = `
       <div class="context-menu-item" data-action="edit">
         <span>✏️</span>编辑
@@ -1305,6 +1308,11 @@ const UI = {
       <div class="context-menu-item" data-action="remove">
         <span>📤</span>移出
       </div>
+      ${showMove ? `
+      <div class="context-menu-item" data-action="move">
+        <span>📋</span>移动
+      </div>
+      ` : ''}
       <div class="context-menu-item context-menu-item-danger" data-action="delete">
         <span>🗑️</span>删除
       </div>
@@ -1321,6 +1329,8 @@ const UI = {
         ShortcutManager.editFolderItem(folderIndex, itemIndex);
       } else if (action === 'remove') {
         ShortcutManager.removeFromFolder(folderIndex, itemIndex);
+      } else if (action === 'move') {
+        ShortcutManager.showMoveFolderItemToTabModal(folderIndex, itemIndex);
       } else if (action === 'delete') {
         ShortcutManager.deleteFromFolder(folderIndex, itemIndex);
       }
@@ -2181,6 +2191,12 @@ const ShortcutManager = {
     // 从当前标签页移除
     State.shortcuts.splice(index, 1);
     
+    // 🔑 关键修复：先同步当前标签页的 shortcuts 到 State.tabs
+    const currentTab = State.tabs.find(t => t.id === State.currentTabId);
+    if (currentTab) {
+      currentTab.shortcuts = JSON.parse(JSON.stringify(State.shortcuts));
+    }
+    
     // 添加到目标标签页
     const targetTab = State.tabs.find(t => t.id === targetTabId);
     if (targetTab) {
@@ -2194,7 +2210,7 @@ const ShortcutManager = {
     await Storage.saveTabs();
     UI.renderShortcuts();
     
-    // 移动后不显示撤回提示
+    Toast.success(`已移动到"${targetTab ? targetTab.name : '目标页面'}"`);
   },
 
   showContextMenu(index, event) {
@@ -3199,6 +3215,164 @@ const ShortcutManager = {
     UI.renderShortcuts();
     
     // 移出分组不显示撤回提示
+  },
+
+  // 显示移动分组内快捷方式到其他标签页的模态框
+  showMoveFolderItemToTabModal(folderIndex, itemIndex) {
+    // 🔑 关键优化：直接复用外部快捷方式的移动模态框逻辑
+    // 创建一个包装函数，将分组内的移动操作适配到外部的移动函数
+    this.showMoveToTabModalForFolderItem(folderIndex, itemIndex);
+  },
+
+  // 显示移动到标签页的模态框（适配分组内快捷方式）
+  showMoveToTabModalForFolderItem(folderIndex, itemIndex) {
+    const folder = State.shortcuts[folderIndex];
+    if (!folder || folder.type !== 'folder') return;
+    
+    const item = folder.items[itemIndex];
+    if (!item) return;
+
+    // 🔑 关键：使用与外部快捷方式完全相同的样式
+    const modal = document.createElement('div');
+    modal.className = 'modal move-tab-modal active';
+    modal.style.display = 'flex';
+    
+    const content = document.createElement('div');
+    content.className = 'modal-content';
+    content.style.width = '280px';
+    content.style.maxHeight = '70vh';
+    content.style.display = 'flex';
+    content.style.flexDirection = 'column';
+    
+    // 标题
+    const header = document.createElement('div');
+    header.className = 'modal-header';
+    header.style.justifyContent = 'center';
+    header.innerHTML = `
+      <h3 style="text-align: center;">移动到：</h3>
+    `;
+    
+    // 标签页列表
+    const tabsList = document.createElement('div');
+    tabsList.style.flex = '1';
+    tabsList.style.overflowY = 'auto';
+    tabsList.style.padding = '0 20px 20px';
+    tabsList.style.marginTop = '12px';
+    
+    State.tabs.forEach(tab => {
+      if (tab.id === State.currentTabId) return; // 跳过当前标签页
+      
+      const tabItem = document.createElement('div');
+      tabItem.className = 'tab-select-item';
+      tabItem.style.cssText = `
+        padding: 12px 16px;
+        margin-bottom: 8px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 14px;
+        text-align: center;
+      `;
+      tabItem.textContent = tab.name;
+      
+      tabItem.addEventListener('mouseenter', () => {
+        tabItem.style.background = 'rgba(66, 133, 244, 0.15)';
+        tabItem.style.borderColor = 'rgba(66, 133, 244, 0.4)';
+        tabItem.style.color = 'rgba(66, 133, 244, 1)';
+      });
+      
+      tabItem.addEventListener('mouseleave', () => {
+        tabItem.style.background = 'rgba(255, 255, 255, 0.05)';
+        tabItem.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+        tabItem.style.color = 'rgba(255, 255, 255, 0.85)';
+      });
+      
+      tabItem.addEventListener('click', () => {
+        this.moveFolderItemToTab(folderIndex, itemIndex, tab.id);
+        modal.remove();
+      });
+      
+      tabsList.appendChild(tabItem);
+    });
+    
+    content.appendChild(header);
+    content.appendChild(tabsList);
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+    
+    // 点击外部关闭（防止从输入框拖拽到外部时关闭）
+    let mouseDownInside = false;
+    
+    // 记录鼠标按下时的位置
+    modal.addEventListener('mousedown', (e) => {
+      // 检查点击是否在模态框内容区域
+      if (content.contains(e.target)) {
+        mouseDownInside = true;
+      } else {
+        mouseDownInside = false;
+      }
+    });
+    
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        // 如果是从模态框内容内开始拖拽到外部，不关闭
+        if (mouseDownInside) {
+          mouseDownInside = false; // 重置状态
+          return;
+        }
+        modal.remove();
+      }
+    });
+  },
+
+  // 移动分组内快捷方式到指定标签页
+  async moveFolderItemToTab(folderIndex, itemIndex, targetTabId) {
+    const folder = State.shortcuts[folderIndex];
+    if (!folder || folder.type !== 'folder') return;
+    
+    const item = folder.items[itemIndex];
+    if (!item) return;
+    
+    // 从分组中移除
+    folder.items.splice(itemIndex, 1);
+    
+    // 如果分组为空，删除分组
+    if (folder.items.length === 0) {
+      State.shortcuts.splice(folderIndex, 1);
+    }
+    
+    // 🔑 关键修复：先同步当前标签页的 shortcuts 到 State.tabs
+    const currentTab = State.tabs.find(t => t.id === State.currentTabId);
+    if (currentTab) {
+      currentTab.shortcuts = JSON.parse(JSON.stringify(State.shortcuts));
+    }
+    
+    // 添加到目标标签页
+    const targetTab = State.tabs.find(t => t.id === targetTabId);
+    if (targetTab) {
+      if (!targetTab.shortcuts) {
+        targetTab.shortcuts = [];
+      }
+      targetTab.shortcuts.push({ ...item });
+    }
+    
+    // 保存并更新显示
+    await Storage.saveTabs();
+    
+    // 如果分组被删除，关闭分组弹窗
+    if (folder.items.length === 0) {
+      UI.toggleFolderModal(false);
+    } else {
+      // 否则重新渲染分组内容
+      UI.renderFolderContent(folder);
+    }
+    
+    UI.renderShortcuts();
+    
+    Toast.success(`已移动到"${targetTab ? targetTab.name : '目标页面'}"`);
   },
 
   // 从分组中删除快捷方式
