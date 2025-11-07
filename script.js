@@ -959,15 +959,28 @@ const UI = {
         link.dataset.url = shortcut.url; // 存储URL但不使用<a>标签
         link.style.cursor = 'pointer'; // 显示手型光标
         
-        // 点击打开链接
-        link.addEventListener('click', async (e) => {
-          e.preventDefault();
+        // 打开链接的通用函数
+        const openLink = async () => {
           try {
             const tabs = await chrome.tabs.query({});
             const lastIndex = tabs.length;
             chrome.tabs.create({ url: shortcut.url, index: lastIndex });
           } catch {
             window.open(shortcut.url, '_blank', 'noopener,noreferrer');
+          }
+        };
+        
+        // 左键点击打开链接
+        link.addEventListener('click', async (e) => {
+          e.preventDefault();
+          await openLink();
+        });
+        
+        // 中键（滚轮）点击打开链接
+        link.addEventListener('mousedown', async (e) => {
+          if (e.button === 1) { // 中键
+            e.preventDefault();
+            await openLink();
           }
         });
 
@@ -1232,20 +1245,37 @@ const UI = {
         setTimeout(() => { isDragging = false; }, 100);
       });
       
-      // 在父元素上处理点击
+      // 打开链接的通用函数
+      const openFolderItemLink = async () => {
+        try {
+          const tabs = await chrome.tabs.query({});
+          const lastIndex = tabs.length;
+          chrome.tabs.create({ url: item.url, index: lastIndex });
+        } catch {
+          window.open(item.url, '_blank', 'noopener,noreferrer');
+        }
+      };
+      
+      // 在父元素上处理左键点击
       shortcutItem.addEventListener('click', async (e) => {
         const clickDuration = Date.now() - dragStartTime;
         // 只有在短时间点击（不是拖动）且没有正在拖动时才打开链接
         if (!isDragging && clickDuration < 300 && !State.draggedItem) {
-          try {
-            const tabs = await chrome.tabs.query({});
-            const lastIndex = tabs.length;
-            chrome.tabs.create({ url: item.url, index: lastIndex });
-          } catch {
-            window.open(item.url, '_blank', 'noopener,noreferrer');
-          }
+          await openFolderItemLink();
         }
         e.preventDefault();
+      });
+      
+      // 在父元素上处理中键（滚轮）点击
+      shortcutItem.addEventListener('mousedown', async (e) => {
+        if (e.button === 1) { // 中键
+          const clickDuration = Date.now() - dragStartTime;
+          // 只有在不拖动时才打开链接
+          if (!isDragging && clickDuration < 300 && !State.draggedItem) {
+            e.preventDefault();
+            await openFolderItemLink();
+          }
+        }
       });
       
       const link = document.createElement('div');
