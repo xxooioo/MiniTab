@@ -3528,10 +3528,59 @@ const Search = {
       return;
     }
 
-    // 检查是否像是域名 (包含点且不包含空格)
-    if (query.includes('.') && !query.includes(' ')) {
-      const url = query.startsWith('www.') ? `https://${query}` : `https://${query}`;
-      window.location.href = url;
+    // 🔑 修复：更严格地判断域名格式
+    // 只有当看起来像真正的域名时才跳转，而不是简单的"包含点且无空格"
+    const looksLikeDomain = (str) => {
+      // 如果包含空格，肯定不是域名
+      if (str.includes(' ')) return false;
+      
+      // 如果以 www. 开头，可能是域名（但需要确保后面还有内容）
+      if (str.startsWith('www.') && str.length > 4) return true;
+      
+      // 🔑 排除常见的编程语言文件扩展名（这些通常不是域名）
+      const programmingExtensions = ['.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.cpp', '.c', '.h', '.go', '.rs', '.php', '.rb', '.swift', '.kt', '.dart', '.vue', '.svelte', '.html', '.css', '.scss', '.less', '.json', '.xml', '.yaml', '.yml', '.md', '.sh', '.bat', '.ps1', '.sql', '.r', '.m', '.pl', '.lua', '.scala', '.clj', '.hs', '.elm', '.ex', '.exs', '.erl', '.fs', '.fsx', '.vb', '.cs', '.d', '.nim', '.zig', '.v', '.cr', '.jl', '.cl', '.lisp', '.ml', '.mli', '.fsi', '.pas', '.p', '.ada', '.asm', '.s', '.sx', '.hpp', '.hxx', '.cxx', '.c++', '.h++', '.tpp', '.ipp', '.inl', '.idl', '.odl', '.def', '.rc', '.resx', '.xaml'];
+      const lowerStr = str.toLowerCase();
+      for (const ext of programmingExtensions) {
+        if (lowerStr.endsWith(ext)) {
+          return false; // 以编程语言扩展名结尾，不是域名
+        }
+      }
+      
+      // 使用正则表达式匹配域名格式：
+      // - 包含字母、数字、连字符和点
+      // - 以常见的顶级域名（TLD）结尾（2-6个字母）
+      // - TLD 前面至少有一个字符
+      // 匹配格式：xxx.xxx.xxx 或 xxx.xxx（其中最后一部分是 TLD）
+      const domainPattern = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,6}$/i;
+      
+      if (domainPattern.test(str)) {
+        // 进一步验证：确保不是纯数字版本号（如 "1.2.3"）
+        // 如果整个字符串都是数字和点，可能是版本号，不是域名
+        if (/^[\d.]+$/.test(str)) {
+          return false;
+        }
+        
+        // 🔑 额外检查：确保TLD是有效的域名后缀
+        // 提取最后一个点后的部分（TLD）
+        const tld = str.split('.').pop().toLowerCase();
+        
+        // 常见的有效TLD列表（主要TLD和国家代码）
+        const validTlds = ['com', 'org', 'net', 'edu', 'gov', 'mil', 'int', 'io', 'co', 'me', 'info', 'xyz', 'dev', 'app', 'tech', 'online', 'site', 'website', 'store', 'shop', 'blog', 'news', 'tv', 'cc', 'top', 'vip', 'pro', 'biz', 'mobi', 'asia', 'name', 'tel', 'travel', 'jobs', 'cn', 'uk', 'us', 'de', 'fr', 'jp', 'kr', 'in', 'ru', 'br', 'au', 'ca', 'mx', 'es', 'it', 'nl', 'se', 'no', 'dk', 'fi', 'pl', 'ch', 'at', 'be', 'nz', 'sg', 'hk', 'tw', 'my', 'th', 'id', 'ph', 'vn', 'ae', 'sa', 'il', 'tr', 'gr', 'pt', 'ie', 'cz', 'hu', 'ro', 'bg', 'hr', 'sk', 'si', 'lt', 'lv', 'ee', 'lu', 'mt', 'cy', 'is', 'li', 'mc', 'ad', 'sm', 'va', 'by', 'ua', 'kz', 'uz', 'ge', 'am', 'az', 'kg', 'tj', 'tm', 'mn', 'af', 'pk', 'bd', 'lk', 'np', 'bt', 'mv', 'mm', 'kh', 'la', 'bn', 'tl', 'pg', 'fj', 'nc', 'pf', 'vu', 'sb', 'ki', 'nr', 'pw', 'fm', 'mh', 'ws', 'to', 'tv', 'ck', 'nu', 'tk', 'as', 'gu', 'mp', 'vi', 'pr', 'do', 'ht', 'jm', 'bb', 'tt', 'gd', 'lc', 'vc', 'ag', 'dm', 'kn', 'bs', 'bz', 'cr', 'pa', 'ni', 'hn', 'sv', 'gt', 'pe', 'ec', 'bo', 'py', 'uy', 'ar', 'cl', 'gf', 'sr', 'gy', 've'];
+        
+        // 如果TLD不在有效列表中，且长度很短（≤3个字符），很可能是编程语言扩展名
+        if (!validTlds.includes(tld) && tld.length <= 3) {
+          return false;
+        }
+        
+        return true;
+      }
+      
+      return false;
+    };
+
+    // 只有当看起来像真正的域名时才跳转
+    if (looksLikeDomain(query)) {
+      window.location.href = `https://${query}`;
       return;
     }
 
