@@ -193,11 +193,16 @@ async function getIconFromPage(tabId) {
   return null;
 }
 
-// 获取 Favicon URL（后备方案）
+// 获取 Favicon URL（优先使用浏览器缓存）
 function getFaviconUrl(url) {
   try {
-    const domain = new URL(url).origin;
-    return `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
+    const pageUrl = new URL(url).href;
+    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL &&
+        typeof location !== 'undefined' && location.protocol === 'chrome-extension:') {
+      const base = chrome.runtime.getURL('_favicon/');
+      return `${base}?pageUrl=${encodeURIComponent(pageUrl)}&size=128`;
+    }
+    return `chrome://favicon2/?size=128&scale=1&pageUrl=${encodeURIComponent(pageUrl)}`;
   } catch {
     return '';
   }

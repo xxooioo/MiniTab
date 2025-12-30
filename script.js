@@ -22,6 +22,8 @@ const CONFIG = {
   }
 };
 
+const ICON_FALLBACK_TIMEOUT_MS = 2500;
+
 const ALLOWED_SHORTCUT_PROTOCOLS = new Set([
   'http:',
   'https:',
@@ -353,14 +355,34 @@ const Utils = {
     return null;
   },
 
-  // 获取 Favicon URL（后备方案）
+  // 获取 Favicon URL（优先使用浏览器缓存）
   getFaviconUrl(url) {
+    try {
+      const pageUrl = new URL(url).href;
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL &&
+          typeof location !== 'undefined' && location.protocol === 'chrome-extension:') {
+        const base = chrome.runtime.getURL('_favicon/');
+        return `${base}?pageUrl=${encodeURIComponent(pageUrl)}&size=128`;
+      }
+      return `chrome://favicon2/?size=128&scale=1&pageUrl=${encodeURIComponent(pageUrl)}`;
+    } catch {
+      return Utils.getDefaultIconData();
+    }
+  },
+
+  // 获取 Favicon URL（外网兜底）
+  getGoogleFaviconUrl(url) {
     try {
       const domain = new URL(url).origin;
       return `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
     } catch {
-      return 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23ffffff"><circle cx="12" cy="12" r="10"/></svg>';
+      return null;
     }
+  },
+
+  // 默认占位图标（SVG）
+  getDefaultIconData() {
+    return 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23ffffff"><circle cx="12" cy="12" r="10"/></svg>';
   },
 
   // 生成文字图标（SVG）
@@ -944,14 +966,57 @@ const UI = {
           miniIcon.className = 'folder-mini-icon';
           miniIcon.draggable = false; // 防止图片阻止拖动
           const itemUrl = items[i].url;
-          miniIcon.src = items[i].icon || Utils.getFaviconUrl(itemUrl);
-          miniIcon.onerror = function() {
-            if (!this.dataset.errorHandled) {
-              this.dataset.errorHandled = 'true';
-              this.src = Utils.getFaviconUrl(itemUrl);
-            } else {
-              // 使用默认占位图标，防止无限循环
-              this.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23ffffff"><circle cx="12" cy="12" r="10"/></svg>';
+          const originalMiniIcon = items[i].icon;
+          const miniIconIsData = originalMiniIcon && originalMiniIcon.startsWith('data:image');
+          miniIcon.src = miniIconIsData ? originalMiniIcon : Utils.getFaviconUrl(itemUrl);
+          let miniIconTimeout = null;
+          const scheduleMiniIconTimeout = () => {
+            if (miniIconTimeout) {
+              clearTimeout(miniIconTimeout);
+            }
+            miniIconTimeout = setTimeout(() => {
+              if (!miniIcon.complete || miniIcon.naturalWidth <= 1 || miniIcon.naturalHeight <= 1) {
+                miniIconFallback();
+              }
+            }, ICON_FALLBACK_TIMEOUT_MS);
+          };
+
+          let miniIconTriedOriginal = false;
+          let miniIconTriedGoogle = false;
+          const miniIconFallback = () => {
+            if (!miniIconIsData && originalMiniIcon && !miniIconTriedOriginal && originalMiniIcon !== miniIcon.src) {
+              miniIconTriedOriginal = true;
+              miniIcon.src = originalMiniIcon;
+              scheduleMiniIconTimeout();
+              return;
+            }
+            if (!miniIconTriedGoogle) {
+              miniIconTriedGoogle = true;
+              const googleUrl = Utils.getGoogleFaviconUrl(itemUrl);
+              if (googleUrl && googleUrl !== miniIcon.src) {
+                miniIcon.src = googleUrl;
+                scheduleMiniIconTimeout();
+                return;
+              }
+            }
+            // 使用默认占位图标，防止无限循环
+            miniIcon.src = Utils.getDefaultIconData();
+          };
+          scheduleMiniIconTimeout();
+
+          miniIcon.onerror = () => {
+            if (miniIconTimeout) {
+              clearTimeout(miniIconTimeout);
+            }
+            miniIconFallback();
+          };
+
+          miniIcon.onload = () => {
+            if (miniIconTimeout) {
+              clearTimeout(miniIconTimeout);
+            }
+            if (miniIcon.naturalWidth <= 1 || miniIcon.naturalHeight <= 1) {
+              miniIconFallback();
             }
           };
           folderIcon.appendChild(miniIcon);
@@ -1024,16 +1089,59 @@ const UI = {
 
         const icon = document.createElement('img');
         icon.className = 'shortcut-icon';
-        icon.src = shortcut.icon || Utils.getFaviconUrl(shortcut.url);
         icon.alt = shortcut.name;
         icon.draggable = false; // 防止图片阻止拖动
-        icon.onerror = function() {
-          if (!this.dataset.errorHandled) {
-            this.dataset.errorHandled = 'true';
-            this.src = Utils.getFaviconUrl(shortcut.url);
-          } else {
-            // 使用默认占位图标，防止无限循环
-            this.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23ffffff"><circle cx="12" cy="12" r="10"/></svg>';
+        const originalIcon = shortcut.icon;
+        const iconIsData = originalIcon && originalIcon.startsWith('data:image');
+        icon.src = iconIsData ? originalIcon : Utils.getFaviconUrl(shortcut.url);
+        let iconTimeout = null;
+        const scheduleIconTimeout = () => {
+          if (iconTimeout) {
+            clearTimeout(iconTimeout);
+          }
+          iconTimeout = setTimeout(() => {
+            if (!icon.complete || icon.naturalWidth <= 1 || icon.naturalHeight <= 1) {
+              iconFallback();
+            }
+          }, ICON_FALLBACK_TIMEOUT_MS);
+        };
+
+        let iconTriedOriginal = false;
+        let iconTriedGoogle = false;
+        const iconFallback = () => {
+          if (!iconIsData && originalIcon && !iconTriedOriginal && originalIcon !== icon.src) {
+            iconTriedOriginal = true;
+            icon.src = originalIcon;
+            scheduleIconTimeout();
+            return;
+          }
+          if (!iconTriedGoogle) {
+            iconTriedGoogle = true;
+            const googleUrl = Utils.getGoogleFaviconUrl(shortcut.url);
+            if (googleUrl && googleUrl !== icon.src) {
+              icon.src = googleUrl;
+              scheduleIconTimeout();
+              return;
+            }
+          }
+          // 使用默认占位图标，防止无限循环
+          icon.src = Utils.getDefaultIconData();
+        };
+        scheduleIconTimeout();
+
+        icon.onerror = () => {
+          if (iconTimeout) {
+            clearTimeout(iconTimeout);
+          }
+          iconFallback();
+        };
+
+        icon.onload = () => {
+          if (iconTimeout) {
+            clearTimeout(iconTimeout);
+          }
+          if (icon.naturalWidth <= 1 || icon.naturalHeight <= 1) {
+            iconFallback();
           }
         };
 
@@ -1327,16 +1435,59 @@ const UI = {
       
       const icon = document.createElement('img');
       icon.className = 'folder-shortcut-icon';
-      icon.src = item.icon || Utils.getFaviconUrl(item.url);
       icon.alt = item.name;
       icon.draggable = false; // 防止图片阻止拖动
-      icon.onerror = function() {
-        if (!this.dataset.errorHandled) {
-          this.dataset.errorHandled = 'true';
-          this.src = Utils.getFaviconUrl(item.url);
-        } else {
-          // 使用默认占位图标，防止无限循环
-          this.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23ffffff"><circle cx="12" cy="12" r="10"/></svg>';
+      const originalFolderIcon = item.icon;
+      const folderIconIsData = originalFolderIcon && originalFolderIcon.startsWith('data:image');
+      icon.src = folderIconIsData ? originalFolderIcon : Utils.getFaviconUrl(item.url);
+      let folderIconTimeout = null;
+      const scheduleFolderIconTimeout = () => {
+        if (folderIconTimeout) {
+          clearTimeout(folderIconTimeout);
+        }
+        folderIconTimeout = setTimeout(() => {
+          if (!icon.complete || icon.naturalWidth <= 1 || icon.naturalHeight <= 1) {
+            folderIconFallback();
+          }
+        }, ICON_FALLBACK_TIMEOUT_MS);
+      };
+
+      let folderIconTriedOriginal = false;
+      let folderIconTriedGoogle = false;
+      const folderIconFallback = () => {
+        if (!folderIconIsData && originalFolderIcon && !folderIconTriedOriginal && originalFolderIcon !== icon.src) {
+          folderIconTriedOriginal = true;
+          icon.src = originalFolderIcon;
+          scheduleFolderIconTimeout();
+          return;
+        }
+        if (!folderIconTriedGoogle) {
+          folderIconTriedGoogle = true;
+          const googleUrl = Utils.getGoogleFaviconUrl(item.url);
+          if (googleUrl && googleUrl !== icon.src) {
+            icon.src = googleUrl;
+            scheduleFolderIconTimeout();
+            return;
+          }
+        }
+        // 使用默认占位图标，防止无限循环
+        icon.src = Utils.getDefaultIconData();
+      };
+      scheduleFolderIconTimeout();
+
+      icon.onerror = () => {
+        if (folderIconTimeout) {
+          clearTimeout(folderIconTimeout);
+        }
+        folderIconFallback();
+      };
+
+      icon.onload = () => {
+        if (folderIconTimeout) {
+          clearTimeout(folderIconTimeout);
+        }
+        if (icon.naturalWidth <= 1 || icon.naturalHeight <= 1) {
+          folderIconFallback();
         }
       };
       
@@ -4445,10 +4596,7 @@ const Events = {
       this.isFirstFocus = true;
     });
 
-    // 自动聚焦搜索框
-    requestAnimationFrame(() => {
-      searchInput.focus();
-    });
+    // 初始不自动聚焦，避免加载时光标闪烁
   },
 
   setupShortcuts() {
@@ -4705,8 +4853,6 @@ const Events = {
 
   setupTabs() {
     // 全局滚轮切换标签页
-    if (State.tabs.length <= 1) return;
-    
     let wheelTimeout = null;
     let accumulatedDelta = 0;
     let hideTimeout = null;
@@ -4733,6 +4879,7 @@ const Events = {
     }
     
     document.addEventListener('wheel', (e) => {
+      if (State.tabs.length <= 1) return;
       // 如果在模态框、设置面板中，不切换标签页
       const modal = Utils.getElement('addShortcutModal');
       const settingsPanel = Utils.getElement('settingsPanel');
@@ -5274,6 +5421,15 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     }
     if (changes.customEngineUrl) {
       State.customEngineUrl = changes.customEngineUrl.newValue || '';
+    }
+    UI.updateSearchEngineUI();
+    const customEngineInput = Utils.getElement('customEngineInput');
+    const customEngineUrlInput = Utils.getElement('customEngineUrl');
+    if (State.currentEngine === 'custom') {
+      if (customEngineInput) customEngineInput.style.display = 'block';
+      if (customEngineUrlInput) customEngineUrlInput.value = State.customEngineUrl || '';
+    } else if (customEngineInput) {
+      customEngineInput.style.display = 'none';
     }
     needsUpdate = true;
   }
