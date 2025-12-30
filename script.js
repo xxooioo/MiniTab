@@ -5592,7 +5592,10 @@ const Events = {
     let accumulatedDelta = 0;
     let hideTimeout = null;
     let lastDirection = 0; // 记录上次的滚动方向
-    const threshold = 50; // 累积阈值，避免触摸板微小滚动触发
+    let bottomReadyTimeout = null;
+    let bottomReady = false;
+    const threshold = 150; // 累积阈值，避免触摸板微小滚动触发
+    const cooldownMs = 600; // 冷却时间，防止一次手势翻多页
     const tabsSidebar = document.querySelector('.tabs-sidebar');
     
     // 鼠标进入显示
@@ -5652,11 +5655,26 @@ const Events = {
         // 重置累积量，防止快速滚动后立即切换
         accumulatedDelta = 0;
         lastDirection = 0;
+        bottomReady = false;
+        if (bottomReadyTimeout) {
+          clearTimeout(bottomReadyTimeout);
+          bottomReadyTimeout = null;
+        }
         if (wheelTimeout) {
           clearTimeout(wheelTimeout);
           wheelTimeout = null;
         }
         return; // 允许正常滚动
+      }
+
+      if (!bottomReady) {
+        if (bottomReadyTimeout) {
+          clearTimeout(bottomReadyTimeout);
+        }
+        bottomReadyTimeout = setTimeout(() => {
+          bottomReady = true;
+        }, 300);
+        return;
       }
       
       // 已经到底部，可以切换标签页
@@ -5692,7 +5710,7 @@ const Events = {
         
         wheelTimeout = setTimeout(() => {
           wheelTimeout = null;
-        }, 300); // 300ms 内只能切换一次
+        }, cooldownMs); // 冷却时间内只能切换一次
       }
     }, { passive: true }); // 使用 passive: true，不阻止默认行为，兼容 macOS
   },
