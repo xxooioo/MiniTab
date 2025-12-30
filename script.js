@@ -2942,7 +2942,11 @@ const ShortcutManager = {
     const showMove = State.tabs.length > 1;
     // 只有普通图标且存在分组时才显示"移入"选项
     const hasFolders = State.shortcuts.some(s => s.type === 'folder');
-    const showMoveIn = shortcut.type !== 'folder' && hasFolders;
+    const selectionAllNonFolder = selectedIds.every(id => {
+      const item = State.shortcuts.find(s => Utils.ensureShortcutId(s) === id);
+      return item && item.type !== 'folder';
+    });
+    const showMoveIn = shortcut.type !== 'folder' && hasFolders && selectionAllNonFolder;
     
     menu.innerHTML = `
       ${selectedIds.length > 1 ? '' : `
@@ -4478,6 +4482,15 @@ const Search = {
 
 // ==================== 数据备份管理 ====================
 const BackupManager = {
+  escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  },
+
   // 导出数据
   async exportData() {
     try {
@@ -4517,6 +4530,79 @@ const BackupManager = {
       Logger.error('Export data error:', error);
       // 使用统一的 Toast 系统
       Toast.error('导出失败');
+    }
+  },
+
+  // 导出为浏览器书签（HTML）
+  async exportBookmarks() {
+    try {
+      const tabs = State.tabs || [];
+      if (tabs.length === 0) {
+        Toast.warning('没有可导出的书签');
+        return;
+      }
+
+      const ts = Math.floor(Date.now() / 1000);
+      const lines = [
+        '<!DOCTYPE NETSCAPE-Bookmark-file-1>',
+        '<!-- This is an automatically generated file. -->',
+        '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">',
+        '<TITLE>Bookmarks</TITLE>',
+        '<H1>Bookmarks</H1>',
+        '<DL><p>',
+        `  <DT><H3 ADD_DATE="${ts}">MiniTab</H3>`,
+        '  <DL><p>'
+      ];
+
+      const pushLink = (name, url, indent) => {
+        if (!url) return;
+        const safeName = this.escapeHtml(name || url);
+        const safeUrl = this.escapeHtml(url);
+        lines.push(`${indent}<DT><A HREF="${safeUrl}" ADD_DATE="${ts}">${safeName}</A>`);
+      };
+
+      tabs.forEach(tab => {
+        lines.push(`    <DT><H3 ADD_DATE="${ts}">${this.escapeHtml(tab.name || '未命名')}</H3>`);
+        lines.push('    <DL><p>');
+
+        (tab.shortcuts || []).forEach(shortcut => {
+          if (shortcut.type === 'folder') {
+            lines.push(`      <DT><H3 ADD_DATE="${ts}">${this.escapeHtml(shortcut.name || '未命名分组')}</H3>`);
+            lines.push('      <DL><p>');
+            (shortcut.items || []).forEach(item => {
+              const validUrl = Utils.validateUrl(item.url);
+              pushLink(item.name, validUrl, '        ');
+            });
+            lines.push('      </DL><p>');
+          } else {
+            const validUrl = Utils.validateUrl(shortcut.url);
+            pushLink(shortcut.name, validUrl, '      ');
+          }
+        });
+
+        lines.push('    </DL><p>');
+      });
+
+      lines.push('  </DL><p>');
+      lines.push('</DL><p>');
+
+      const html = lines.join('\n');
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+
+      const now = new Date();
+      const filename = `MiniTab_Bookmarks_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}.html`;
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      Toast.success('书签已导出');
+    } catch (error) {
+      Logger.error('Export bookmarks error:', error);
+      Toast.error('导出书签失败');
     }
   },
 
@@ -5946,6 +6032,7 @@ const Events = {
 
     // ✅ 数据备份按钮
     const exportDataBtn = Utils.getElement('exportDataBtn');
+    const exportBookmarksBtn = Utils.getElement('exportBookmarksBtn');
     const importDataBtn = Utils.getElement('importDataBtn');
     const importBookmarksBtn = Utils.getElement('importBookmarksBtn');
     const dataImport = Utils.getElement('dataImport');
@@ -5953,6 +6040,12 @@ const Events = {
     if (exportDataBtn) {
       exportDataBtn.addEventListener('click', () => {
         BackupManager.exportData();
+      });
+    }
+
+    if (exportBookmarksBtn) {
+      exportBookmarksBtn.addEventListener('click', () => {
+        BackupManager.exportBookmarks();
       });
     }
 

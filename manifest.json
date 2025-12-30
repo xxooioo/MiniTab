@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MiniTab",
-  "version": "1.1.0",
+  "version": "1.2.1",
   "description": "简洁的新标签页",
   "permissions": [
     "storage",
@@ -27,4 +27,3 @@
     "128": "icons/icon.png"
   }
 }
-

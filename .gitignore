@@ -35,6 +35,8 @@ logs/
 *.tmp
 *.bak
 *.cache
+AGENTS.md
+CLAUDE.md
 
 # 打包文件
 *.zip
@@ -49,4 +51,3 @@ user_backgrounds/
 # 测试
 coverage/
 .nyc_output/
-
