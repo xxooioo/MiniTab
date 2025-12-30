@@ -22,6 +22,31 @@ const CONFIG = {
   }
 };
 
+const ALLOWED_SHORTCUT_PROTOCOLS = new Set([
+  'http:',
+  'https:',
+  'chrome:',
+  'chrome-extension:',
+  'file:',
+  'ftp:',
+  'mailto:'
+]);
+
+function normalizeShortcutUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') return null;
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return null;
+  const hasScheme = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(trimmed);
+  const candidate = hasScheme ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(candidate);
+    if (!ALLOWED_SHORTCUT_PROTOCOLS.has(parsed.protocol)) return null;
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
+
 // ==================== 调试日志 ====================
 const Logger = {
   debug: (...args) => {
@@ -143,7 +168,7 @@ const Validator = {
     // 普通快捷方式
     return typeof shortcut.name === 'string' &&
            typeof shortcut.url === 'string' &&
-           shortcut.url.length > 0;
+           normalizeShortcutUrl(shortcut.url) !== null;
   },
   
   // 清理无效数据
@@ -208,10 +233,19 @@ class ToastManager {
     
     const style = styles[type] || styles.info;
     
-    toast.innerHTML = `
-      <span class="toast-icon" style="color: ${style.iconColor}; font-weight: bold; font-size: 16px;">${style.icon}</span>
-      <span class="toast-message">${message}</span>
-    `;
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'toast-icon';
+    iconSpan.textContent = style.icon;
+    iconSpan.style.color = style.iconColor;
+    iconSpan.style.fontWeight = 'bold';
+    iconSpan.style.fontSize = '16px';
+
+    const messageSpan = document.createElement('span');
+    messageSpan.className = 'toast-message';
+    messageSpan.textContent = message;
+
+    toast.appendChild(iconSpan);
+    toast.appendChild(messageSpan);
     
     toast.style.cssText = `
       position: fixed;
@@ -485,13 +519,7 @@ const Utils = {
 
   // 验证 URL
   validateUrl(url) {
-    try {
-      const validUrl = url.startsWith('http') ? url : `https://${url}`;
-      new URL(validUrl);
-      return validUrl;
-    } catch {
-      return null;
-    }
+    return normalizeShortcutUrl(url);
   },
 
   // 安全获取元素
@@ -962,16 +990,21 @@ const UI = {
         // 打开链接的通用函数
         // inBackground: true 表示在后台打开，不切换到新标签页
         const openLink = async (inBackground = false) => {
+          const validUrl = Utils.validateUrl(shortcut.url);
+          if (!validUrl) {
+            Toast.error('无效的链接地址');
+            return;
+          }
           try {
             const tabs = await chrome.tabs.query({});
             const lastIndex = tabs.length;
             chrome.tabs.create({ 
-              url: shortcut.url, 
+              url: validUrl, 
               index: lastIndex,
               active: !inBackground // active: false 表示后台打开
             });
           } catch {
-            window.open(shortcut.url, '_blank', 'noopener,noreferrer');
+            window.open(validUrl, '_blank', 'noopener,noreferrer');
           }
         };
         
@@ -3663,41 +3696,116 @@ const BackupManager = {
       const currentTabsCount = State.tabs.length;
       const currentShortcutsCount = State.tabs.reduce((sum, tab) => sum + (tab.shortcuts?.length || 0), 0);
       
-      content.innerHTML = `
-        <div class="modal-header">
-          <h3>恢复数据</h3>
-        </div>
-        <div class="modal-body">
-          <div style="margin-bottom: 20px;">
-            <p><strong>备份信息：</strong></p>
-            <p>备份时间：${backupTime}</p>
-            <p>标签页数量：${tabsCount}</p>
-            <p>快捷方式总数：${shortcutsCount}</p>
-          </div>
-          <div style="margin-bottom: 20px;">
-            <p><strong>当前数据：</strong></p>
-            <p>标签页数量：${currentTabsCount}</p>
-            <p>快捷方式总数：${currentShortcutsCount}</p>
-          </div>
-          <div style="margin-bottom: 20px;">
-            <p><strong>请选择导入方式：</strong></p>
-          </div>
-          <div style="display: flex; gap: 12px; flex-direction: column;">
-            <button class="btn btn-secondary import-mode-btn" data-mode="replace" style="justify-content: flex-start; text-align: left;">
-              <div style="font-weight: 600; margin-bottom: 4px;">覆盖现有数据</div>
-              <div style="font-size: 12px; opacity: 0.8;">删除所有现有数据，用备份数据替换</div>
-            </button>
-            <button class="btn btn-secondary import-mode-btn" data-mode="merge" style="justify-content: flex-start; text-align: left;">
-              <div style="font-weight: 600; margin-bottom: 4px;">合并到现有数据</div>
-              <div style="font-size: 12px; opacity: 0.8;">将备份数据追加到现有数据后面</div>
-            </button>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" id="cancelImportBtn">取消</button>
-          <button class="btn btn-primary" id="confirmImportBtn" disabled>确定</button>
-        </div>
-      `;
+      const header = document.createElement('div');
+      header.className = 'modal-header';
+      const title = document.createElement('h3');
+      title.textContent = '恢复数据';
+      header.appendChild(title);
+
+      const body = document.createElement('div');
+      body.className = 'modal-body';
+
+      const backupInfo = document.createElement('div');
+      backupInfo.style.marginBottom = '20px';
+      const backupLabel = document.createElement('p');
+      const backupStrong = document.createElement('strong');
+      backupStrong.textContent = '备份信息：';
+      backupLabel.appendChild(backupStrong);
+      const backupTimeText = document.createElement('p');
+      backupTimeText.textContent = `备份时间：${backupTime}`;
+      const backupTabsText = document.createElement('p');
+      backupTabsText.textContent = `标签页数量：${tabsCount}`;
+      const backupShortcutsText = document.createElement('p');
+      backupShortcutsText.textContent = `快捷方式总数：${shortcutsCount}`;
+      backupInfo.appendChild(backupLabel);
+      backupInfo.appendChild(backupTimeText);
+      backupInfo.appendChild(backupTabsText);
+      backupInfo.appendChild(backupShortcutsText);
+
+      const currentInfo = document.createElement('div');
+      currentInfo.style.marginBottom = '20px';
+      const currentLabel = document.createElement('p');
+      const currentStrong = document.createElement('strong');
+      currentStrong.textContent = '当前数据：';
+      currentLabel.appendChild(currentStrong);
+      const currentTabsText = document.createElement('p');
+      currentTabsText.textContent = `标签页数量：${currentTabsCount}`;
+      const currentShortcutsText = document.createElement('p');
+      currentShortcutsText.textContent = `快捷方式总数：${currentShortcutsCount}`;
+      currentInfo.appendChild(currentLabel);
+      currentInfo.appendChild(currentTabsText);
+      currentInfo.appendChild(currentShortcutsText);
+
+      const modePrompt = document.createElement('div');
+      modePrompt.style.marginBottom = '20px';
+      const modeLabel = document.createElement('p');
+      const modeStrong = document.createElement('strong');
+      modeStrong.textContent = '请选择导入方式：';
+      modeLabel.appendChild(modeStrong);
+      modePrompt.appendChild(modeLabel);
+
+      const modeList = document.createElement('div');
+      modeList.style.display = 'flex';
+      modeList.style.gap = '12px';
+      modeList.style.flexDirection = 'column';
+
+      const replaceBtn = document.createElement('button');
+      replaceBtn.className = 'btn btn-secondary import-mode-btn';
+      replaceBtn.dataset.mode = 'replace';
+      replaceBtn.style.justifyContent = 'flex-start';
+      replaceBtn.style.textAlign = 'left';
+      const replaceTitle = document.createElement('div');
+      replaceTitle.textContent = '覆盖现有数据';
+      replaceTitle.style.fontWeight = '600';
+      replaceTitle.style.marginBottom = '4px';
+      const replaceDesc = document.createElement('div');
+      replaceDesc.textContent = '删除所有现有数据，用备份数据替换';
+      replaceDesc.style.fontSize = '12px';
+      replaceDesc.style.opacity = '0.8';
+      replaceBtn.appendChild(replaceTitle);
+      replaceBtn.appendChild(replaceDesc);
+
+      const mergeBtn = document.createElement('button');
+      mergeBtn.className = 'btn btn-secondary import-mode-btn';
+      mergeBtn.dataset.mode = 'merge';
+      mergeBtn.style.justifyContent = 'flex-start';
+      mergeBtn.style.textAlign = 'left';
+      const mergeTitle = document.createElement('div');
+      mergeTitle.textContent = '合并到现有数据';
+      mergeTitle.style.fontWeight = '600';
+      mergeTitle.style.marginBottom = '4px';
+      const mergeDesc = document.createElement('div');
+      mergeDesc.textContent = '将备份数据追加到现有数据后面';
+      mergeDesc.style.fontSize = '12px';
+      mergeDesc.style.opacity = '0.8';
+      mergeBtn.appendChild(mergeTitle);
+      mergeBtn.appendChild(mergeDesc);
+
+      modeList.appendChild(replaceBtn);
+      modeList.appendChild(mergeBtn);
+
+      body.appendChild(backupInfo);
+      body.appendChild(currentInfo);
+      body.appendChild(modePrompt);
+      body.appendChild(modeList);
+
+      const footer = document.createElement('div');
+      footer.className = 'modal-footer';
+      const cancelBtnEl = document.createElement('button');
+      cancelBtnEl.className = 'btn btn-secondary';
+      cancelBtnEl.id = 'cancelImportBtn';
+      cancelBtnEl.textContent = '取消';
+      const confirmBtnEl = document.createElement('button');
+      confirmBtnEl.className = 'btn btn-primary';
+      confirmBtnEl.id = 'confirmImportBtn';
+      confirmBtnEl.disabled = true;
+      confirmBtnEl.textContent = '确定';
+      footer.appendChild(cancelBtnEl);
+      footer.appendChild(confirmBtnEl);
+
+      content.appendChild(header);
+      content.appendChild(body);
+      content.appendChild(footer);
       
       modal.appendChild(content);
       document.body.appendChild(modal);
@@ -3930,6 +4038,7 @@ const BackupManager = {
 
       // 递归处理书签树，只导入有直接书签的文件夹作为分组
       const shortcuts = [];
+      let skippedCount = 0;
       
       // 收集文件夹内的直接书签（不递归嵌套文件夹）
       const collectDirectBookmarks = (node) => {
@@ -3941,10 +4050,15 @@ const BackupManager = {
         
         node.children.forEach(child => {
           if (child.url) {
+            const validUrl = Utils.validateUrl(child.url);
+            if (!validUrl) {
+              skippedCount++;
+              return;
+            }
             // 只收集直接书签，不处理嵌套文件夹
             bookmarks.push({
               name: child.title || '未命名',
-              url: child.url,
+              url: validUrl,
               icon: ''
             });
           }
@@ -3985,10 +4099,15 @@ const BackupManager = {
             }
           });
         } else if (node.url) {
+          const validUrl = Utils.validateUrl(node.url);
+          if (!validUrl) {
+            skippedCount++;
+            return;
+          }
           // 普通书签（不在文件夹中）
           shortcuts.push({
             name: node.title || '未命名',
-            url: node.url,
+            url: validUrl,
             icon: ''
           });
         }
@@ -4036,7 +4155,8 @@ const BackupManager = {
       Toast.success(
         `导入成功！\n` +
         `分组：${folderCount} 个\n` +
-        `快捷方式：${bookmarkCount + totalInFolders} 个`,
+        `快捷方式：${bookmarkCount + totalInFolders} 个` +
+        (skippedCount > 0 ? `\n已跳过无效链接：${skippedCount} 个` : ''),
         4000
       );
 
@@ -4223,6 +4343,35 @@ const Settings = {
     
     // 保存设置（null 表示使用默认背景）
     await Storage.set({ background: null });
+  },
+
+  async applyBackground(backgroundValue) {
+    let background = backgroundValue;
+    if (background === undefined) {
+      const stored = await Storage.get(['background']);
+      background = stored.background;
+    }
+
+    if (background) {
+      if (background.startsWith('linear-gradient')) {
+        document.body.style.background = background;
+        document.body.style.backgroundImage = '';
+      } else {
+        document.body.style.background = '';
+        document.body.style.backgroundImage = `url(${background})`;
+      }
+      document.body.style.backgroundSize = 'cover';
+      document.body.style.backgroundPosition = 'center';
+      document.body.style.backgroundAttachment = 'fixed';
+      return;
+    }
+
+    const defaultGradient = 'linear-gradient(135deg, #30cfd0 0%, #330867 100%)';
+    document.body.style.background = defaultGradient;
+    document.body.style.backgroundImage = '';
+    document.body.style.backgroundSize = 'cover';
+    document.body.style.backgroundPosition = 'center';
+    document.body.style.backgroundAttachment = 'fixed';
   }
 };
 
@@ -5119,23 +5268,24 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
   
   // 检查搜索引擎设置是否变化
-  if (changes.searchEngine || changes.customSearchEngine) {
+  if (changes.searchEngine || changes.customEngineUrl) {
     if (changes.searchEngine) {
       State.currentEngine = changes.searchEngine.newValue || CONFIG.defaultSettings.searchEngine;
     }
-    if (changes.customSearchEngine) {
-      State.customEngineUrl = changes.customSearchEngine.newValue || '';
+    if (changes.customEngineUrl) {
+      State.customEngineUrl = changes.customEngineUrl.newValue || '';
     }
     needsUpdate = true;
   }
   
   // 检查搜索框透明度是否变化
   if (changes.searchOpacity) {
-    const searchContainer = document.querySelector('.search-container');
-    if (searchContainer) {
-      const opacity = changes.searchOpacity.newValue || CONFIG.defaultSettings.searchOpacity;
-      searchContainer.style.backgroundColor = `rgba(255, 255, 255, ${opacity / 10})`;
-    }
+    const opacity = changes.searchOpacity.newValue || CONFIG.defaultSettings.searchOpacity;
+    UI.applySearchOpacity(opacity);
+    const opacitySlider = Utils.getElement('searchOpacity');
+    const opacityValue = Utils.getElement('opacityValue');
+    if (opacitySlider) opacitySlider.value = opacity;
+    if (opacityValue) opacityValue.textContent = `${opacity}%`;
   }
   
   // 检查网格列数是否变化
@@ -5156,13 +5306,14 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     UI.renderShortcuts();
     
     // 如果背景设置变化，重新应用背景
-    if (changes.backgroundType || changes.backgroundImage || changes.backgroundColor || changes.backgroundBlur) {
-      Settings.applyBackground();
+    if (changes.background) {
+      Settings.applyBackground(changes.background.newValue);
     }
     
     // 如果网格列数变化，重新应用
     if (changes.gridColumns) {
-      Settings.applyGridColumns();
+      const columns = changes.gridColumns.newValue || CONFIG.defaultSettings.gridColumns;
+      UI.applyGridColumns(columns);
     }
     
     Logger.debug('UI updated due to storage changes');

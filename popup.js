@@ -205,10 +205,24 @@ function getFaviconUrl(url) {
 
 // 验证 URL
 function validateUrl(url) {
+  if (typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  const hasScheme = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(trimmed);
+  const candidate = hasScheme ? trimmed : `https://${trimmed}`;
   try {
-    const validUrl = url.startsWith('http') ? url : `https://${url}`;
-    new URL(validUrl);
-    return validUrl;
+    const parsed = new URL(candidate);
+    const allowedProtocols = new Set([
+      'http:',
+      'https:',
+      'chrome:',
+      'chrome-extension:',
+      'file:',
+      'ftp:',
+      'mailto:'
+    ]);
+    if (!allowedProtocols.has(parsed.protocol)) return null;
+    return parsed.href;
   } catch {
     return null;
   }
