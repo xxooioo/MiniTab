@@ -472,6 +472,13 @@ body {
   transform: scale(1.08);
 }
 
+.shortcut-item.selected .shortcut-icon,
+.folder-shortcut-item.selected .folder-shortcut-icon {
+  outline: 2px solid rgba(var(--primary-rgb), 0.8);
+  outline-offset: 2px;
+}
+
+
 /* 移除整个项的 hover 效果，改为只在图标自己的 hover 中处理 */
 
 .shortcut-icon {
@@ -1598,5 +1605,3 @@ body:has(.settings-btn:hover) .settings-btn,
   width: 0;
   height: 0;
 }
-
-

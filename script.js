@@ -93,7 +93,11 @@ const State = {
   draggedItem: null, // 拖拽的元素
   dropTarget: null, // 放置目标
   lastFolderMovePosition: null, // 记录上次文件夹移动位置，防止重复触发
-  draggingTab: false // 是否正在拖拽标签页
+  draggingTab: false, // 是否正在拖拽标签页
+  selectedShortcutIds: new Set(),
+  lastSelectedShortcutId: null,
+  selectedFolderItemIds: new Set(),
+  lastSelectedFolderItemId: null
 };
 
 // 将 State 暴露到全局作用域，供 drag-handler.js 使用
@@ -922,6 +926,9 @@ const UI = {
       item.dataset.index = index;
       // 🔑 关键修复：保存唯一 ID 到 DOM 元素
       item.dataset.shortcutId = Utils.ensureShortcutId(shortcut);
+      if (State.selectedShortcutIds.has(item.dataset.shortcutId)) {
+        item.classList.add('selected');
+      }
       
       // 添加拖拽属性
       item.draggable = true;
@@ -948,6 +955,11 @@ const UI = {
         
         folderIcon.addEventListener('click', (e) => {
           e.stopPropagation(); // 阻止事件冒泡
+          if (e.shiftKey || e.ctrlKey || e.metaKey) {
+            ShortcutManager.toggleShortcutSelection(item.dataset.shortcutId, e);
+            e.preventDefault();
+            return;
+          }
           // 只有短时间点击（不是拖动）才打开分组
           const clickDuration = Date.now() - clickStartTime;
           if (clickDuration < 300) {
@@ -1038,6 +1050,13 @@ const UI = {
         folderDiv.appendChild(folderIcon);
         folderDiv.appendChild(name);
 
+        item.addEventListener('click', (e) => {
+          if (e.shiftKey || e.ctrlKey || e.metaKey) {
+            ShortcutManager.toggleShortcutSelection(item.dataset.shortcutId, e);
+            e.preventDefault();
+          }
+        });
+
         // 右键菜单
         item.oncontextmenu = (e) => {
           e.preventDefault();
@@ -1075,6 +1094,12 @@ const UI = {
         
         // 左键点击打开链接（切换到新标签页）
         link.addEventListener('click', async (e) => {
+          if (e.shiftKey || e.ctrlKey || e.metaKey) {
+            ShortcutManager.toggleShortcutSelection(item.dataset.shortcutId, e);
+            e.preventDefault();
+            return;
+          }
+          ShortcutManager.clearShortcutSelection();
           e.preventDefault();
           await openLink(false);
         });
@@ -1082,6 +1107,11 @@ const UI = {
         // 中键（滚轮）点击打开链接（后台打开，不切换）
         link.addEventListener('auxclick', async (e) => {
           if (e.button === 1) { // 中键
+            if (e.shiftKey || e.ctrlKey || e.metaKey) {
+              ShortcutManager.toggleShortcutSelection(item.dataset.shortcutId, e);
+              e.preventDefault();
+              return;
+            }
             e.preventDefault();
             await openLink(true); // 后台打开
           }
@@ -1364,6 +1394,9 @@ const UI = {
       shortcutItem.dataset.itemIndex = itemIndex;
       // 🔑 关键修复：保存唯一 ID 到 DOM 元素
       shortcutItem.dataset.itemId = Utils.ensureShortcutId(item);
+      if (State.selectedFolderItemIds.has(shortcutItem.dataset.itemId)) {
+        shortcutItem.classList.add('selected');
+      }
       
       // 添加拖拽支持
       shortcutItem.draggable = true;
@@ -1412,6 +1445,12 @@ const UI = {
         const clickDuration = Date.now() - dragStartTime;
         // 只有在短时间点击（不是拖动）且没有正在拖动时才打开链接
         if (!isDragging && clickDuration < 300 && !State.draggedItem) {
+          if (e.shiftKey || e.ctrlKey || e.metaKey) {
+            ShortcutManager.toggleFolderItemSelection(State.editingIndex, shortcutItem.dataset.itemId, e);
+            e.preventDefault();
+            return;
+          }
+          ShortcutManager.clearFolderSelection();
           await openFolderItemLink(false);
         }
         e.preventDefault();
@@ -1423,6 +1462,11 @@ const UI = {
           const clickDuration = Date.now() - dragStartTime;
           // 只有在不拖动时才打开链接
           if (!isDragging && clickDuration < 300 && !State.draggedItem) {
+            if (e.shiftKey || e.ctrlKey || e.metaKey) {
+              ShortcutManager.toggleFolderItemSelection(State.editingIndex, shortcutItem.dataset.itemId, e);
+              e.preventDefault();
+              return;
+            }
             e.preventDefault();
             await openFolderItemLink(true); // 后台打开
           }
@@ -1516,6 +1560,10 @@ const UI = {
   showFolderItemContextMenu(folderIndex, itemId, event) {
     const existingMenu = document.querySelector('.context-menu');
     if (existingMenu) existingMenu.remove();
+    if (!State.selectedFolderItemIds.has(itemId)) {
+      ShortcutManager.selectFolderItemOnly(itemId);
+    }
+    const selectedItemIds = Array.from(State.selectedFolderItemIds);
 
     const menu = document.createElement('div');
     menu.className = 'context-menu';
@@ -1526,9 +1574,11 @@ const UI = {
     const showMove = State.tabs.length > 1;
 
     menu.innerHTML = `
+      ${selectedItemIds.length > 1 ? '' : `
       <div class="context-menu-item" data-action="edit">
         <span>✏️</span>编辑
       </div>
+      `}
       <div class="context-menu-item" data-action="remove">
         <span>📤</span>移出
       </div>
@@ -1550,13 +1600,29 @@ const UI = {
 
       const action = item.dataset.action;
       if (action === 'edit') {
+        if (selectedItemIds.length > 1) {
+          Toast.warning('只能编辑单个图标');
+          return;
+        }
         ShortcutManager.editFolderItem(folderIndex, itemId);
       } else if (action === 'remove') {
-        ShortcutManager.removeFromFolder(folderIndex, itemId);
+        if (selectedItemIds.length > 1) {
+          ShortcutManager.removeSelectedFromFolder(folderIndex, selectedItemIds);
+        } else {
+          ShortcutManager.removeFromFolder(folderIndex, itemId);
+        }
       } else if (action === 'move') {
-        ShortcutManager.showMoveFolderItemToTabModal(folderIndex, itemId);
+        if (selectedItemIds.length > 1) {
+          ShortcutManager.showMoveFolderItemsToTabModal(folderIndex, selectedItemIds);
+        } else {
+          ShortcutManager.showMoveFolderItemToTabModal(folderIndex, itemId);
+        }
       } else if (action === 'delete') {
-        ShortcutManager.deleteFromFolder(folderIndex, itemId);
+        if (selectedItemIds.length > 1) {
+          ShortcutManager.deleteSelectedFromFolder(folderIndex, selectedItemIds);
+        } else {
+          ShortcutManager.deleteFromFolder(folderIndex, itemId);
+        }
       }
 
       menu.remove();
@@ -1593,6 +1659,7 @@ const TabManager = {
   async switchTab(tabId) {
     if (State.currentTabId === tabId) return; // 避免重复切换
     
+    ShortcutManager.clearShortcutSelection();
     State.currentTabId = tabId;
     await Storage.saveTabs();
     this.loadCurrentTabShortcuts();
@@ -1968,6 +2035,136 @@ const ShortcutManager = {
     UI.toggleModal(true, false);
   },
 
+  clearShortcutSelection() {
+    State.selectedShortcutIds.forEach((id) => {
+      const item = document.querySelector(`.shortcut-item[data-shortcut-id="${id}"]`);
+      if (item) item.classList.remove('selected');
+    });
+    State.selectedShortcutIds.clear();
+    State.lastSelectedShortcutId = null;
+  },
+
+  selectShortcutOnly(id) {
+    this.clearShortcutSelection();
+    State.selectedShortcutIds.add(id);
+    State.lastSelectedShortcutId = id;
+    const item = document.querySelector(`.shortcut-item[data-shortcut-id="${id}"]`);
+    if (item) item.classList.add('selected');
+  },
+
+  toggleShortcutSelection(id, event) {
+    const ids = State.shortcuts.map(shortcut => Utils.ensureShortcutId(shortcut));
+    const currentIndex = ids.indexOf(id);
+    if (currentIndex === -1) return;
+
+    const isToggle = event.ctrlKey || event.metaKey;
+    const isRange = event.shiftKey && State.lastSelectedShortcutId;
+
+    if (isRange) {
+      const lastIndex = ids.indexOf(State.lastSelectedShortcutId);
+      if (lastIndex === -1) return;
+      const [start, end] = lastIndex < currentIndex ? [lastIndex, currentIndex] : [currentIndex, lastIndex];
+      if (!isToggle) {
+        this.clearShortcutSelection();
+      }
+      for (let i = start; i <= end; i++) {
+        const rangeId = ids[i];
+        if (!State.selectedShortcutIds.has(rangeId)) {
+          State.selectedShortcutIds.add(rangeId);
+          const item = document.querySelector(`.shortcut-item[data-shortcut-id="${rangeId}"]`);
+          if (item) item.classList.add('selected');
+        }
+      }
+      return;
+    }
+
+    if (isToggle) {
+      if (State.selectedShortcutIds.has(id)) {
+        State.selectedShortcutIds.delete(id);
+        const item = document.querySelector(`.shortcut-item[data-shortcut-id="${id}"]`);
+        if (item) item.classList.remove('selected');
+      } else {
+        State.selectedShortcutIds.add(id);
+        const item = document.querySelector(`.shortcut-item[data-shortcut-id="${id}"]`);
+        if (item) item.classList.add('selected');
+      }
+      State.lastSelectedShortcutId = id;
+      return;
+    }
+
+    this.clearShortcutSelection();
+    State.selectedShortcutIds.add(id);
+    State.lastSelectedShortcutId = id;
+    const item = document.querySelector(`.shortcut-item[data-shortcut-id="${id}"]`);
+    if (item) item.classList.add('selected');
+  },
+
+  clearFolderSelection() {
+    State.selectedFolderItemIds.forEach((id) => {
+      const item = document.querySelector(`.folder-shortcut-item[data-item-id="${id}"]`);
+      if (item) item.classList.remove('selected');
+    });
+    State.selectedFolderItemIds.clear();
+    State.lastSelectedFolderItemId = null;
+  },
+
+  selectFolderItemOnly(itemId) {
+    this.clearFolderSelection();
+    State.selectedFolderItemIds.add(itemId);
+    State.lastSelectedFolderItemId = itemId;
+    const item = document.querySelector(`.folder-shortcut-item[data-item-id="${itemId}"]`);
+    if (item) item.classList.add('selected');
+  },
+
+  toggleFolderItemSelection(folderIndex, itemId, event) {
+    const folder = State.shortcuts[folderIndex];
+    if (!folder || folder.type !== 'folder') return;
+    const ids = folder.items.map(item => Utils.ensureShortcutId(item));
+    const currentIndex = ids.indexOf(itemId);
+    if (currentIndex === -1) return;
+
+    const isToggle = event.ctrlKey || event.metaKey;
+    const isRange = event.shiftKey && State.lastSelectedFolderItemId;
+
+    if (isRange) {
+      const lastIndex = ids.indexOf(State.lastSelectedFolderItemId);
+      if (lastIndex === -1) return;
+      const [start, end] = lastIndex < currentIndex ? [lastIndex, currentIndex] : [currentIndex, lastIndex];
+      if (!isToggle) {
+        this.clearFolderSelection();
+      }
+      for (let i = start; i <= end; i++) {
+        const rangeId = ids[i];
+        if (!State.selectedFolderItemIds.has(rangeId)) {
+          State.selectedFolderItemIds.add(rangeId);
+          const item = document.querySelector(`.folder-shortcut-item[data-item-id="${rangeId}"]`);
+          if (item) item.classList.add('selected');
+        }
+      }
+      return;
+    }
+
+    if (isToggle) {
+      if (State.selectedFolderItemIds.has(itemId)) {
+        State.selectedFolderItemIds.delete(itemId);
+        const item = document.querySelector(`.folder-shortcut-item[data-item-id="${itemId}"]`);
+        if (item) item.classList.remove('selected');
+      } else {
+        State.selectedFolderItemIds.add(itemId);
+        const item = document.querySelector(`.folder-shortcut-item[data-item-id="${itemId}"]`);
+        if (item) item.classList.add('selected');
+      }
+      State.lastSelectedFolderItemId = itemId;
+      return;
+    }
+
+    this.clearFolderSelection();
+    State.selectedFolderItemIds.add(itemId);
+    State.lastSelectedFolderItemId = itemId;
+    const item = document.querySelector(`.folder-shortcut-item[data-item-id="${itemId}"]`);
+    if (item) item.classList.add('selected');
+  },
+
   edit(index) {
     State.editingIndex = index;
     const shortcut = State.shortcuts[index];
@@ -2181,6 +2378,35 @@ const ShortcutManager = {
     });
   },
 
+  async deleteSelectedShortcuts(selectedIds) {
+    const indices = selectedIds
+      .map(id => State.shortcuts.findIndex(s => Utils.ensureShortcutId(s) === id))
+      .filter(index => index !== -1)
+      .sort((a, b) => a - b);
+    if (indices.length === 0) return;
+
+    const deletedItems = indices.map(index => ({
+      index,
+      item: State.shortcuts[index]
+    }));
+
+    indices.slice().sort((a, b) => b - a).forEach((index) => {
+      State.shortcuts.splice(index, 1);
+    });
+
+    await Storage.saveShortcuts();
+    UI.renderShortcuts();
+    this.clearShortcutSelection();
+
+    Utils.showUndoToast(`已删除 ${deletedItems.length} 个图标`, async () => {
+      deletedItems.sort((a, b) => a.index - b.index).forEach(({ index, item }) => {
+        State.shortcuts.splice(index, 0, item);
+      });
+      await Storage.saveShortcuts();
+      UI.renderShortcuts();
+    });
+  },
+
   // 显示移入分组的模态框
   showMoveIntoFolderModal(index) {
     const shortcut = State.shortcuts[index];
@@ -2283,6 +2509,97 @@ const ShortcutManager = {
     });
   },
 
+  showMoveIntoFolderModalForSelection(selectedIds) {
+    if (!selectedIds || selectedIds.length === 0) return;
+    const modal = document.createElement('div');
+    modal.className = 'modal move-folder-modal active';
+    modal.style.display = 'flex';
+    
+    const content = document.createElement('div');
+    content.className = 'modal-content';
+    content.style.width = '280px';
+    content.style.maxHeight = '70vh';
+    content.style.display = 'flex';
+    content.style.flexDirection = 'column';
+    
+    const header = document.createElement('div');
+    header.className = 'modal-header';
+    header.style.justifyContent = 'center';
+    header.innerHTML = `
+      <h3 style="text-align: center;">移入：</h3>
+    `;
+    
+    const foldersList = document.createElement('div');
+    foldersList.style.flex = '1';
+    foldersList.style.overflowY = 'auto';
+    foldersList.style.padding = '0 20px 20px';
+    foldersList.style.marginTop = '12px';
+    
+    State.shortcuts.forEach((item, idx) => {
+      if (item.type !== 'folder') return;
+      
+      const folderItem = document.createElement('div');
+      folderItem.className = 'folder-select-item';
+      folderItem.style.cssText = `
+        padding: 12px 16px;
+        margin-bottom: 8px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 14px;
+        text-align: center;
+      `;
+      folderItem.textContent = item.name;
+      
+      folderItem.addEventListener('mouseenter', () => {
+        folderItem.style.background = 'rgba(66, 133, 244, 0.15)';
+        folderItem.style.borderColor = 'rgba(66, 133, 244, 0.4)';
+        folderItem.style.color = 'rgba(66, 133, 244, 1)';
+      });
+      
+      folderItem.addEventListener('mouseleave', () => {
+        folderItem.style.background = 'rgba(255, 255, 255, 0.05)';
+        folderItem.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+        folderItem.style.color = 'rgba(255, 255, 255, 0.85)';
+      });
+      
+      folderItem.addEventListener('click', () => {
+        this.moveSelectedIntoFolder(selectedIds, idx);
+        modal.remove();
+      });
+      
+      foldersList.appendChild(folderItem);
+    });
+    
+    content.appendChild(header);
+    content.appendChild(foldersList);
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+    
+    let mouseDownInside = false;
+    
+    modal.addEventListener('mousedown', (e) => {
+      if (content.contains(e.target)) {
+        mouseDownInside = true;
+      } else {
+        mouseDownInside = false;
+      }
+    });
+    
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        if (mouseDownInside) {
+          mouseDownInside = false;
+          return;
+        }
+        modal.remove();
+      }
+    });
+  },
+
   // 移入图标到指定分组
   async moveIntoFolder(shortcutIndex, folderIndex) {
     const shortcut = State.shortcuts[shortcutIndex];
@@ -2304,6 +2621,50 @@ const ShortcutManager = {
     UI.renderShortcuts();
     
     // 移入后不显示撤回提示
+  },
+
+  async moveSelectedIntoFolder(selectedIds, folderIndex) {
+    const folder = State.shortcuts[folderIndex];
+    if (!folder || folder.type !== 'folder') return;
+    const indices = selectedIds
+      .map(id => State.shortcuts.findIndex(s => Utils.ensureShortcutId(s) === id))
+      .filter(index => index !== -1)
+      .sort((a, b) => a - b);
+    if (indices.length === 0) return;
+
+    if (!folder.items) {
+      folder.items = [];
+    }
+
+    const movedShortcuts = [];
+    indices.forEach((index) => {
+      const shortcut = State.shortcuts[index];
+      if (shortcut && shortcut.type !== 'folder') {
+        movedShortcuts.push(shortcut);
+      }
+    });
+    if (movedShortcuts.length === 0) {
+      Toast.warning('没有可移入的图标');
+      return;
+    }
+
+    movedShortcuts.forEach(shortcut => {
+      folder.items.push({ ...shortcut });
+    });
+
+    const removeIndices = indices
+      .filter(index => {
+        const shortcut = State.shortcuts[index];
+        return shortcut && shortcut.type !== 'folder';
+      })
+      .sort((a, b) => b - a);
+    removeIndices.forEach((index) => {
+      State.shortcuts.splice(index, 1);
+    });
+
+    await Storage.saveShortcuts();
+    UI.renderShortcuts();
+    this.clearShortcutSelection();
   },
 
   // 显示移动到页面的模态框
@@ -2407,6 +2768,98 @@ const ShortcutManager = {
     });
   },
 
+  showMoveToTabModalForSelection(selectedIds) {
+    if (!selectedIds || selectedIds.length === 0) return;
+
+    const modal = document.createElement('div');
+    modal.className = 'modal move-tab-modal active';
+    modal.style.display = 'flex';
+    
+    const content = document.createElement('div');
+    content.className = 'modal-content';
+    content.style.width = '280px';
+    content.style.maxHeight = '70vh';
+    content.style.display = 'flex';
+    content.style.flexDirection = 'column';
+    
+    const header = document.createElement('div');
+    header.className = 'modal-header';
+    header.style.justifyContent = 'center';
+    header.innerHTML = `
+      <h3 style="text-align: center;">移动到：</h3>
+    `;
+    
+    const tabsList = document.createElement('div');
+    tabsList.style.flex = '1';
+    tabsList.style.overflowY = 'auto';
+    tabsList.style.padding = '0 20px 20px';
+    tabsList.style.marginTop = '12px';
+    
+    State.tabs.forEach(tab => {
+      if (tab.id === State.currentTabId) return;
+      
+      const tabItem = document.createElement('div');
+      tabItem.className = 'tab-select-item';
+      tabItem.style.cssText = `
+        padding: 12px 16px;
+        margin-bottom: 8px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 14px;
+        text-align: center;
+      `;
+      tabItem.textContent = tab.name;
+      
+      tabItem.addEventListener('mouseenter', () => {
+        tabItem.style.background = 'rgba(66, 133, 244, 0.15)';
+        tabItem.style.borderColor = 'rgba(66, 133, 244, 0.4)';
+        tabItem.style.color = 'rgba(66, 133, 244, 1)';
+      });
+      
+      tabItem.addEventListener('mouseleave', () => {
+        tabItem.style.background = 'rgba(255, 255, 255, 0.05)';
+        tabItem.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+        tabItem.style.color = 'rgba(255, 255, 255, 0.85)';
+      });
+      
+      tabItem.addEventListener('click', () => {
+        this.moveSelectedToTab(selectedIds, tab.id);
+        modal.remove();
+      });
+      
+      tabsList.appendChild(tabItem);
+    });
+    
+    content.appendChild(header);
+    content.appendChild(tabsList);
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+    
+    let mouseDownInside = false;
+    
+    modal.addEventListener('mousedown', (e) => {
+      if (content.contains(e.target)) {
+        mouseDownInside = true;
+      } else {
+        mouseDownInside = false;
+      }
+    });
+    
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        if (mouseDownInside) {
+          mouseDownInside = false;
+          return;
+        }
+        modal.remove();
+      }
+    });
+  },
+
   // 移动图标/分组到指定标签页
   async moveToTab(index, targetTabId) {
     const shortcut = State.shortcuts[index];
@@ -2435,9 +2888,45 @@ const ShortcutManager = {
     UI.renderShortcuts();
   },
 
+  async moveSelectedToTab(selectedIds, targetTabId) {
+    const indices = selectedIds
+      .map(id => State.shortcuts.findIndex(s => Utils.ensureShortcutId(s) === id))
+      .filter(index => index !== -1)
+      .sort((a, b) => a - b);
+    if (indices.length === 0) return;
+
+    const movedItems = indices.map(index => State.shortcuts[index]);
+
+    indices.slice().sort((a, b) => b - a).forEach((index) => {
+      State.shortcuts.splice(index, 1);
+    });
+
+    const currentTab = State.tabs.find(t => t.id === State.currentTabId);
+    if (currentTab) {
+      currentTab.shortcuts = JSON.parse(JSON.stringify(State.shortcuts));
+    }
+
+    const targetTab = State.tabs.find(t => t.id === targetTabId);
+    if (targetTab) {
+      if (!targetTab.shortcuts) {
+        targetTab.shortcuts = [];
+      }
+      movedItems.forEach(item => targetTab.shortcuts.push({ ...item }));
+    }
+
+    await Storage.saveTabs();
+    UI.renderShortcuts();
+    this.clearShortcutSelection();
+  },
+
   showContextMenu(index, event) {
     const shortcut = State.shortcuts[index];
     if (!shortcut) return;
+    const shortcutId = Utils.ensureShortcutId(shortcut);
+    if (!State.selectedShortcutIds.has(shortcutId)) {
+      this.selectShortcutOnly(shortcutId);
+    }
+    const selectedIds = Array.from(State.selectedShortcutIds);
 
     // 创建自定义右键菜单
     const existingMenu = document.querySelector('.context-menu');
@@ -2456,9 +2945,11 @@ const ShortcutManager = {
     const showMoveIn = shortcut.type !== 'folder' && hasFolders;
     
     menu.innerHTML = `
+      ${selectedIds.length > 1 ? '' : `
       <div class="context-menu-item" data-action="edit">
         <span>✏️</span>编辑
       </div>
+      `}
       ${showMoveIn ? `
       <div class="context-menu-item" data-action="movein">
         <span>📥</span>移入
@@ -2483,6 +2974,10 @@ const ShortcutManager = {
 
       const action = item.dataset.action;
       if (action === 'edit') {
+        if (selectedIds.length > 1) {
+          Toast.warning('只能编辑单个图标');
+          return;
+        }
         // 根据类型调用不同的编辑方法
         if (shortcut.type === 'folder') {
           this.editFolderName(index);
@@ -2490,11 +2985,23 @@ const ShortcutManager = {
           this.edit(index);
         }
       } else if (action === 'movein') {
-        this.showMoveIntoFolderModal(index);
+        if (selectedIds.length > 1) {
+          this.showMoveIntoFolderModalForSelection(selectedIds);
+        } else {
+          this.showMoveIntoFolderModal(index);
+        }
       } else if (action === 'move') {
-        this.showMoveToTabModal(index);
+        if (selectedIds.length > 1) {
+          this.showMoveToTabModalForSelection(selectedIds);
+        } else {
+          this.showMoveToTabModal(index);
+        }
       } else if (action === 'delete') {
-        this.delete(index);
+        if (selectedIds.length > 1) {
+          this.deleteSelectedShortcuts(selectedIds);
+        } else {
+          this.delete(index);
+        }
       }
 
       menu.remove();
@@ -2804,6 +3311,8 @@ const ShortcutManager = {
     const folder = State.shortcuts[index];
     if (!folder || folder.type !== 'folder') return;
     
+    this.clearShortcutSelection();
+    this.clearFolderSelection();
     State.editingIndex = index;
     UI.toggleFolderModal(true, folder);
   },
@@ -3467,11 +3976,143 @@ const ShortcutManager = {
     // 移出分组不显示撤回提示
   },
 
+  async removeSelectedFromFolder(folderIndex, itemIds) {
+    const folder = State.shortcuts[folderIndex];
+    if (!folder || folder.type !== 'folder') return;
+
+    const idSet = new Set(itemIds);
+    const removedItems = [];
+    folder.items = folder.items.filter((item) => {
+      const itemId = Utils.ensureShortcutId(item);
+      if (idSet.has(itemId)) {
+        removedItems.push(item);
+        return false;
+      }
+      return true;
+    });
+
+    removedItems.forEach(item => State.shortcuts.push(item));
+
+    const shouldDismissFolder = folder.items.length <= 1;
+    if (shouldDismissFolder) {
+      const remainingItem = folder.items[0];
+      if (remainingItem) {
+        State.shortcuts[folderIndex] = remainingItem;
+      } else {
+        State.shortcuts.splice(folderIndex, 1);
+      }
+      State.editingIndex = -1;
+      State.editingFolderItemIndex = -1;
+      UI.toggleFolderModal(false);
+    } else {
+      State.editingIndex = folderIndex;
+      UI.renderFolderContent(folder);
+    }
+
+    await Storage.saveShortcuts();
+    UI.renderShortcuts();
+    this.clearFolderSelection();
+  },
+
   // 显示移动分组内快捷方式到其他标签页的模态框
   showMoveFolderItemToTabModal(folderIndex, itemId) {
     // 🔑 关键优化：直接复用外部快捷方式的移动模态框逻辑
     // 创建一个包装函数，将分组内的移动操作适配到外部的移动函数
     this.showMoveToTabModalForFolderItem(folderIndex, itemId);
+  },
+
+  showMoveFolderItemsToTabModal(folderIndex, itemIds) {
+    const folder = State.shortcuts[folderIndex];
+    if (!folder || folder.type !== 'folder') return;
+    if (!itemIds || itemIds.length === 0) return;
+
+    const modal = document.createElement('div');
+    modal.className = 'modal move-tab-modal active';
+    modal.style.display = 'flex';
+    
+    const content = document.createElement('div');
+    content.className = 'modal-content';
+    content.style.width = '280px';
+    content.style.maxHeight = '70vh';
+    content.style.display = 'flex';
+    content.style.flexDirection = 'column';
+    
+    const header = document.createElement('div');
+    header.className = 'modal-header';
+    header.style.justifyContent = 'center';
+    header.innerHTML = `
+      <h3 style="text-align: center;">移动到：</h3>
+    `;
+    
+    const tabsList = document.createElement('div');
+    tabsList.style.flex = '1';
+    tabsList.style.overflowY = 'auto';
+    tabsList.style.padding = '0 20px 20px';
+    tabsList.style.marginTop = '12px';
+    
+    State.tabs.forEach(tab => {
+      if (tab.id === State.currentTabId) return;
+      
+      const tabItem = document.createElement('div');
+      tabItem.className = 'tab-select-item';
+      tabItem.style.cssText = `
+        padding: 12px 16px;
+        margin-bottom: 8px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 14px;
+        text-align: center;
+      `;
+      tabItem.textContent = tab.name;
+      
+      tabItem.addEventListener('mouseenter', () => {
+        tabItem.style.background = 'rgba(66, 133, 244, 0.15)';
+        tabItem.style.borderColor = 'rgba(66, 133, 244, 0.4)';
+        tabItem.style.color = 'rgba(66, 133, 244, 1)';
+      });
+      
+      tabItem.addEventListener('mouseleave', () => {
+        tabItem.style.background = 'rgba(255, 255, 255, 0.05)';
+        tabItem.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+        tabItem.style.color = 'rgba(255, 255, 255, 0.85)';
+      });
+      
+      tabItem.addEventListener('click', () => {
+        this.moveFolderItemsToTab(folderIndex, itemIds, tab.id);
+        modal.remove();
+      });
+      
+      tabsList.appendChild(tabItem);
+    });
+    
+    content.appendChild(header);
+    content.appendChild(tabsList);
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+    
+    let mouseDownInside = false;
+    
+    modal.addEventListener('mousedown', (e) => {
+      if (content.contains(e.target)) {
+        mouseDownInside = true;
+      } else {
+        mouseDownInside = false;
+      }
+    });
+    
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        if (mouseDownInside) {
+          mouseDownInside = false;
+          return;
+        }
+        modal.remove();
+      }
+    });
   },
 
   // 显示移动到标签页的模态框（适配分组内快捷方式）
@@ -3644,6 +4285,56 @@ const ShortcutManager = {
     }
     
     UI.renderShortcuts();
+  },
+
+  async moveFolderItemsToTab(folderIndex, itemIds, targetTabId) {
+    const folder = State.shortcuts[folderIndex];
+    if (!folder || folder.type !== 'folder') return;
+
+    const idSet = new Set(itemIds);
+    const movedItems = [];
+    folder.items = folder.items.filter((item) => {
+      const itemId = Utils.ensureShortcutId(item);
+      if (idSet.has(itemId)) {
+        movedItems.push(item);
+        return false;
+      }
+      return true;
+    });
+
+    const shouldDismissFolder = folder.items.length <= 1;
+    if (shouldDismissFolder) {
+      const remainingItem = folder.items[0];
+      if (remainingItem) {
+        State.shortcuts[folderIndex] = remainingItem;
+      } else {
+        State.shortcuts.splice(folderIndex, 1);
+      }
+    }
+
+    const currentTab = State.tabs.find(t => t.id === State.currentTabId);
+    if (currentTab) {
+      currentTab.shortcuts = JSON.parse(JSON.stringify(State.shortcuts));
+    }
+
+    const targetTab = State.tabs.find(t => t.id === targetTabId);
+    if (targetTab) {
+      if (!targetTab.shortcuts) {
+        targetTab.shortcuts = [];
+      }
+      movedItems.forEach(item => targetTab.shortcuts.push({ ...item }));
+    }
+
+    await Storage.saveTabs();
+
+    if (shouldDismissFolder) {
+      UI.toggleFolderModal(false);
+    } else {
+      UI.renderFolderContent(folder);
+    }
+
+    UI.renderShortcuts();
+    this.clearFolderSelection();
   },
 
   // 从分组中删除快捷方式
@@ -3827,6 +4518,40 @@ const BackupManager = {
       // 使用统一的 Toast 系统
       Toast.error('导出失败');
     }
+  },
+
+  async deleteSelectedFromFolder(folderIndex, itemIds) {
+    const previousState = JSON.parse(JSON.stringify(State.shortcuts));
+    const folder = State.shortcuts[folderIndex];
+    if (!folder || folder.type !== 'folder') return;
+
+    const idSet = new Set(itemIds);
+    folder.items = folder.items.filter((item) => !idSet.has(Utils.ensureShortcutId(item)));
+
+    if (folder.items.length <= 1) {
+      const remainingItem = folder.items[0];
+      if (remainingItem) {
+        State.shortcuts[folderIndex] = remainingItem;
+      } else {
+        State.shortcuts.splice(folderIndex, 1);
+      }
+      State.editingIndex = -1;
+      State.editingFolderItemIndex = -1;
+      UI.toggleFolderModal(false);
+    } else {
+      State.editingIndex = folderIndex;
+      UI.renderFolderContent(folder);
+    }
+
+    await Storage.saveShortcuts();
+    UI.renderShortcuts();
+    this.clearFolderSelection();
+
+    Utils.showUndoToast(`已删除 ${itemIds.length} 个图标`, async () => {
+      State.shortcuts = previousState;
+      await Storage.saveShortcuts();
+      UI.renderShortcuts();
+    });
   },
   
   // 显示导入方式选择对话框
@@ -4616,6 +5341,16 @@ const Events = {
     if (saveBtn) {
       saveBtn.addEventListener('click', () => ShortcutManager.save());
     }
+
+    document.addEventListener('click', (e) => {
+      if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+      const isShortcut = e.target.closest('.shortcut-item');
+      const isFolderItem = e.target.closest('.folder-shortcut-item');
+      if (!isShortcut && !isFolderItem) {
+        ShortcutManager.clearShortcutSelection();
+        ShortcutManager.clearFolderSelection();
+      }
+    });
 
     // 点击模态框外部关闭（防止从输入框拖拽到外部时关闭）
     if (modal) {
