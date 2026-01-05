@@ -3,36 +3,60 @@ class DragHandler {
   constructor() {
     this.draggedIndex = null;
     this.draggedElement = null;
+    this.draggedElements = [];
     this.placeholder = null;
     this.dropTarget = null;
     this.lastMoveIndex = null; // 记录上次移动到的位置
     this.lastHighlightedElement = null; // 记录上次高亮的元素
+    this.draggedShortcuts = [];
+    this.draggedIds = [];
+    this.isMultiDrag = false;
+    this.multiAllNonFolder = false;
   }
 
   // 初始化拖拽
-  handleDragStart(e, index, shortcuts) {
+  handleDragStart(e, index, shortcuts, selectedIds = null) {
     this.draggedIndex = index;
     this.draggedElement = e.currentTarget;
+    this.draggedElements = [];
     
     // 保存被拖拽对象的引用（而不是索引）
     this.draggedShortcut = shortcuts[index];
+    this.draggedShortcuts = [];
+    this.draggedIds = [];
+    this.isMultiDrag = false;
+    this.multiAllNonFolder = false;
+
+    if (selectedIds && selectedIds.length > 1) {
+      this.isMultiDrag = true;
+      this.draggedIds = selectedIds.slice();
+      this.draggedShortcuts = shortcuts.filter(s => this.draggedIds.includes(s._id));
+      this.multiAllNonFolder = this.draggedShortcuts.every(s => s.type !== 'folder');
+      this.draggedElements = this.draggedIds
+        .map(id => document.querySelector(`.shortcut-item[data-shortcut-id="${id}"]`))
+        .filter(Boolean);
+    } else {
+      this.draggedShortcuts = [this.draggedShortcut];
+      this.draggedIds = [this.draggedShortcut?._id].filter(Boolean);
+      this.draggedElements = [this.draggedElement].filter(Boolean);
+    }
     
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', index);
     
     // 创建自定义拖拽图像（只显示图标）
-    this.createDragImage(e);
+    this.createDragImage(e, this.isMultiDrag ? this.draggedIds.length : 1);
     
     // 使用 setTimeout 延迟添加 dragging 类
     setTimeout(() => {
-      if (this.draggedElement) {
-        this.draggedElement.classList.add('dragging');
-      }
+      this.draggedElements.forEach((el) => {
+        el.classList.add('dragging');
+      });
     }, 0);
   }
 
   // 创建拖拽图像
-  createDragImage(e) {
+  createDragImage(e, count = 1) {
     try {
       const ghost = document.createElement('div');
       const iconElement = e.currentTarget.querySelector('.shortcut-icon, .folder-icon');
@@ -48,6 +72,21 @@ class DragHandler {
         ghost.style.transform = 'scale(1.12)';
         ghost.style.filter = 'drop-shadow(0 8px 16px rgba(0,0,0,0.25))';
         ghost.style.pointerEvents = 'none';
+        if (count > 1) {
+          const badge = document.createElement('div');
+          badge.textContent = count.toString();
+          badge.style.position = 'absolute';
+          badge.style.right = '-6px';
+          badge.style.top = '-6px';
+          badge.style.background = 'rgba(0,0,0,0.7)';
+          badge.style.color = '#fff';
+          badge.style.fontSize = '12px';
+          badge.style.fontWeight = 'bold';
+          badge.style.padding = '2px 6px';
+          badge.style.borderRadius = '999px';
+          badge.style.pointerEvents = 'none';
+          ghost.appendChild(badge);
+        }
         document.body.appendChild(ghost);
         
         e.dataTransfer.setDragImage(ghost, 28, 28);
@@ -74,7 +113,7 @@ class DragHandler {
     const mouseX = e.clientX;
     const mouseY = e.clientY;
     
-    const draggedShortcut = shortcuts[this.draggedIndex];
+    const draggedShortcut = this.isMultiDrag ? { type: this.multiAllNonFolder ? 'item' : 'folder' } : shortcuts[this.draggedIndex];
     const targetShortcut = shortcuts[index];
     
     // 只清除上次的高亮元素（如果有的话）
@@ -90,9 +129,10 @@ class DragHandler {
       const distX = Math.abs(mouseX - centerX);
       const distY = Math.abs(mouseY - centerY);
       
-      // 放大判定区域到 50%，让添加到分组更容易触发
-      const thresholdX = rect.width * 0.5;
-      const thresholdY = rect.height * 0.5;
+      // 多选拖拽缩小中心判定，避免误触发分组逻辑
+      const thresholdScale = this.isMultiDrag ? 0.25 : 0.5;
+      const thresholdX = rect.width * thresholdScale;
+      const thresholdY = rect.height * thresholdScale;
       
       if (distX < thresholdX && distY < thresholdY) {
         e.currentTarget.classList.add('drag-over-create');
@@ -115,9 +155,10 @@ class DragHandler {
       const distX = Math.abs(mouseX - centerX);
       const distY = Math.abs(mouseY - centerY);
       
-      // 放大判定区域到 45%，让创建分组更容易触发
-      const thresholdX = rect.width * 0.45;
-      const thresholdY = rect.height * 0.45;
+      // 多选拖拽缩小中心判定，避免误触发分组逻辑
+      const thresholdScale = this.isMultiDrag ? 0.25 : 0.45;
+      const thresholdX = rect.width * thresholdScale;
+      const thresholdY = rect.height * thresholdScale;
       
       if (distX < thresholdX && distY < thresholdY) {
         e.currentTarget.classList.add('drag-over-create');
@@ -132,6 +173,11 @@ class DragHandler {
       }
     }
     
+    if (this.isMultiDrag) {
+      this.dropTarget = { index, action: 'reorder' };
+      return;
+    }
+
     // 其他区域 - 移动位置
     // 使用和分组内一样的逻辑：直接根据鼠标位置移动，简单高效
     
@@ -237,6 +283,9 @@ class DragHandler {
     return {
       draggedIndex: this.draggedIndex,
       draggedShortcut: this.draggedShortcut,  // 返回拖拽对象的引用
+      draggedShortcuts: this.draggedShortcuts,
+      draggedIds: this.draggedIds,
+      isMultiDrag: this.isMultiDrag,
       dropTarget: finalDropTarget || this.dropTarget  // 使用最终判定的 action
     };
   }
@@ -259,7 +308,7 @@ class DragHandler {
     const shortcuts = window.State?.shortcuts;
     if (!shortcuts || !shortcuts[targetIndex]) return null;
     
-    const draggedShortcut = this.draggedShortcut;
+    const draggedShortcut = this.isMultiDrag ? { type: this.multiAllNonFolder ? 'item' : 'folder' } : this.draggedShortcut;
     const targetShortcut = shortcuts[targetIndex];
     
     // 计算鼠标相对于目标元素的位置
@@ -270,8 +319,9 @@ class DragHandler {
     const distY = Math.abs(e.clientY - centerY);
     
     // 判断是否在中心区域（用于 addToFolder 或 createFolder）
-    const thresholdX = rect.width * 0.45;
-    const thresholdY = rect.height * 0.45;
+    const thresholdScale = this.isMultiDrag ? 0.25 : 0.45;
+    const thresholdX = rect.width * thresholdScale;
+    const thresholdY = rect.height * thresholdScale;
     const inCenterArea = distX < thresholdX && distY < thresholdY;
     
     // 优先判断：拖到分组上 -> 添加到分组
@@ -292,22 +342,29 @@ class DragHandler {
       };
     }
     
-    // 否则就是重新排序
+    const container = targetElement.parentElement;
+    const children = container ? Array.from(container.children) : [];
+    const actualTargetIndex = children.indexOf(targetElement);
+    const isHorizontalGrid = rect.width > rect.height ||
+      (actualTargetIndex > 0 && children[actualTargetIndex - 1] &&
+        children[actualTargetIndex - 1].getBoundingClientRect().top === rect.top);
+    const insertBefore = isHorizontalGrid
+      ? e.clientX < centerX
+      : e.clientY < centerY;
     return {
       index: targetIndex,
-      action: 'reorder'
+      action: 'reorder',
+      insertBefore
     };
   }
 
   // 拖拽结束
   handleDragEnd() {
     // 立即移除 dragging 类，避免任何视觉闪烁
-    if (this.draggedElement) {
-      // 强制同步移除类名
-      this.draggedElement.classList.remove('dragging');
-      // 强制浏览器重绘
-      this.draggedElement.offsetHeight;
-    }
+    this.draggedElements.forEach((el) => {
+      el.classList.remove('dragging');
+      el.offsetHeight;
+    });
     
     // 清除上次高亮的元素
     if (this.lastHighlightedElement) {
@@ -328,9 +385,14 @@ class DragHandler {
       // 重置状态
       this.draggedIndex = null;
       this.draggedElement = null;
+      this.draggedElements = [];
       this.dropTarget = null;
       this.lastMoveIndex = null;
       this.lastHighlightedElement = null;
+      this.draggedShortcuts = [];
+      this.draggedIds = [];
+      this.isMultiDrag = false;
+      this.multiAllNonFolder = false;
     }, 0);
   }
 
@@ -339,4 +401,3 @@ class DragHandler {
     return this.draggedIndex;
   }
 }
-

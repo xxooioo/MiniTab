@@ -3288,7 +3288,12 @@ const ShortcutManager = {
 
   // 拖拽开始
   handleDragStart(e, index) {
-    dragHandler.handleDragStart(e, index, State.shortcuts);
+    const draggedShortcut = State.shortcuts[index];
+    const draggedId = draggedShortcut ? Utils.ensureShortcutId(draggedShortcut) : null;
+    const selectedIds = draggedId && State.selectedShortcutIds.has(draggedId) && State.selectedShortcutIds.size > 1
+      ? Array.from(State.selectedShortcutIds)
+      : null;
+    dragHandler.handleDragStart(e, index, State.shortcuts, selectedIds);
   },
 
   // 拖拽经过
@@ -3319,6 +3324,9 @@ const ShortcutManager = {
     
     // 根据不同的动作处理
     if (action === 'reorder') {
+      if (result.isMultiDrag && result.draggedIds?.length > 1) {
+        return;
+      }
       // 🔑 关键修复：直接根据 DOM 顺序更新数组（使用唯一 ID）
       const updateSuccess = this.updateShortcutsFromDOM();
       
@@ -3379,6 +3387,10 @@ const ShortcutManager = {
           !targetShortcut || targetShortcut.type !== 'folder') {
         return;
       }
+      if (result.isMultiDrag && result.draggedShortcuts?.length > 1) {
+        await this.addSelectedToFolder(result.draggedShortcuts, targetShortcut);
+        return;
+      }
       
       // 在 State.shortcuts 中找到这两个对象的索引
       const draggedIdx = State.shortcuts.indexOf(draggedShortcut);
@@ -3406,6 +3418,10 @@ const ShortcutManager = {
       // 确保两个都是普通快捷方式
       if (!draggedShortcut || draggedShortcut.type === 'folder' || 
           !targetShortcut || targetShortcut.type === 'folder') {
+        return;
+      }
+      if (result.isMultiDrag && result.draggedShortcuts?.length > 1) {
+        await this.createFolderFromSelection(result.draggedShortcuts, targetShortcut);
         return;
       }
       
@@ -3447,6 +3463,57 @@ const ShortcutManager = {
       UI.renderShortcuts();
     }
   },
+
+
+  async addSelectedToFolder(draggedShortcuts, targetFolder) {
+    if (!Array.isArray(draggedShortcuts) || draggedShortcuts.length === 0) return;
+    if (!targetFolder || targetFolder.type !== 'folder') return;
+    if (draggedShortcuts.some(s => s.type === 'folder')) return;
+
+    const selectedSet = new Set(draggedShortcuts.map(s => Utils.ensureShortcutId(s)));
+    if (selectedSet.has(Utils.ensureShortcutId(targetFolder))) return;
+
+    draggedShortcuts.forEach(shortcut => {
+      targetFolder.items.push({ ...shortcut });
+    });
+
+    State.shortcuts = State.shortcuts.filter(s => !selectedSet.has(Utils.ensureShortcutId(s)));
+    await Storage.saveShortcuts();
+    UI.renderShortcuts();
+  },
+
+  async createFolderFromSelection(draggedShortcuts, targetShortcut) {
+    if (!Array.isArray(draggedShortcuts) || draggedShortcuts.length === 0) return;
+    if (!targetShortcut || targetShortcut.type === 'folder') return;
+    if (draggedShortcuts.some(s => s.type === 'folder')) return;
+
+    const selectedSet = new Set(draggedShortcuts.map(s => Utils.ensureShortcutId(s)));
+    if (!selectedSet.has(Utils.ensureShortcutId(targetShortcut))) {
+      draggedShortcuts = [targetShortcut, ...draggedShortcuts];
+      selectedSet.add(Utils.ensureShortcutId(targetShortcut));
+    }
+
+    const targetId = Utils.ensureShortcutId(targetShortcut);
+    const targetIndex = State.shortcuts.findIndex(s => Utils.ensureShortcutId(s) === targetId);
+    if (targetIndex === -1) return;
+    const removedBefore = State.shortcuts
+      .slice(0, targetIndex)
+      .filter(s => selectedSet.has(Utils.ensureShortcutId(s))).length;
+    let folderPosition = targetIndex - removedBefore;
+    if (folderPosition < 0) folderPosition = 0;
+    const newFolder = {
+      type: 'folder',
+      name: Utils.getNextFolderName(),
+      items: draggedShortcuts.map(s => ({ ...s }))
+    };
+
+    State.shortcuts = State.shortcuts.filter(s => !selectedSet.has(Utils.ensureShortcutId(s)));
+    State.shortcuts.splice(folderPosition, 0, newFolder);
+
+    await Storage.saveShortcuts();
+    UI.renderShortcuts();
+  },
+
   
   // 从DOM更新shortcuts数组顺序
   updateShortcutsFromDOM() {
@@ -3743,12 +3810,21 @@ const ShortcutManager = {
   handleFolderItemDragStart(e, folderIndex, itemIndex) {
     const folder = State.shortcuts[folderIndex];
     if (!folder || folder.type !== 'folder') return;
-    
+    const draggedItem = folder.items[itemIndex];
+    const draggedId = draggedItem ? Utils.ensureShortcutId(draggedItem) : null;
+    const selectedIds = draggedId && State.selectedFolderItemIds.has(draggedId) && State.selectedFolderItemIds.size > 1
+      ? Array.from(State.selectedFolderItemIds)
+      : [draggedId].filter(Boolean);
+    const selectedItems = folder.items.filter(item => selectedIds.includes(Utils.ensureShortcutId(item)));
+
     State.draggedItem = {
       type: 'folderItem',
       folderIndex: folderIndex,
       itemIndex: itemIndex,
-      item: folder.items[itemIndex]
+      item: draggedItem,
+      itemIds: selectedIds,
+      items: selectedItems,
+      isMulti: selectedItems.length > 1
     };
     
     const draggedElement = e.currentTarget;
@@ -3768,6 +3844,21 @@ const ShortcutManager = {
         ghost.style.height = '56px';
         ghost.style.opacity = '0.85';
         ghost.style.pointerEvents = 'none';
+        if (State.draggedItem.isMulti) {
+          const badge = document.createElement('div');
+          badge.textContent = State.draggedItem.items.length.toString();
+          badge.style.position = 'absolute';
+          badge.style.right = '-6px';
+          badge.style.top = '-6px';
+          badge.style.background = 'rgba(0,0,0,0.7)';
+          badge.style.color = '#fff';
+          badge.style.fontSize = '12px';
+          badge.style.fontWeight = 'bold';
+          badge.style.padding = '2px 6px';
+          badge.style.borderRadius = '999px';
+          badge.style.pointerEvents = 'none';
+          ghost.appendChild(badge);
+        }
         document.body.appendChild(ghost);
         
         e.dataTransfer.setDragImage(ghost, 28, 28);
@@ -3784,7 +3875,12 @@ const ShortcutManager = {
     
     // 使用 setTimeout 延迟添加 dragging 类，避免阻止后续事件
     setTimeout(() => {
-      if (draggedElement) {
+      if (State.draggedItem?.isMulti) {
+        State.draggedItem.itemIds.forEach((id) => {
+          const el = document.querySelector(`.folder-shortcut-item[data-item-id="${id}"]`);
+          if (el) el.classList.add('dragging');
+        });
+      } else if (draggedElement) {
         draggedElement.classList.add('dragging');
       }
     }, 0);
@@ -3792,7 +3888,14 @@ const ShortcutManager = {
 
   // 从分组内拖拽结束
   async handleFolderItemDragEnd(e) {
-    e.currentTarget.classList.remove('dragging');
+    if (State.draggedItem?.isMulti && Array.isArray(State.draggedItem.itemIds)) {
+      State.draggedItem.itemIds.forEach((id) => {
+        const el = document.querySelector(`.folder-shortcut-item[data-item-id="${id}"]`);
+        if (el) el.classList.remove('dragging');
+      });
+    } else {
+      e.currentTarget.classList.remove('dragging');
+    }
     
     // 重置位置缓存
     State.lastFolderMovePosition = null;
@@ -3879,23 +3982,29 @@ const ShortcutManager = {
       const folder = State.shortcuts[dragData.folderIndex];
       
       if (folder && folder.type === 'folder') {
-        // 🔑 关键修复：使用唯一 ID 来查找要移除的项目，而不是使用索引
-        // 因为在拖拽过程中，DOM 顺序可能已经改变，itemIndex 可能不准确
-        const itemId = Utils.ensureShortcutId(dragData.item);
-        const actualIndex = folder.items.findIndex(item => Utils.ensureShortcutId(item) === itemId);
+        const removedItems = [];
+        const idSet = new Set(dragData.itemIds || []);
+        if (idSet.size === 0 && dragData.item) {
+          idSet.add(Utils.ensureShortcutId(dragData.item));
+        }
         
-        if (actualIndex === -1) {
-          Logger.error('Cannot find item to remove from folder');
+        folder.items = folder.items.filter((item) => {
+          const id = Utils.ensureShortcutId(item);
+          if (idSet.has(id)) {
+            removedItems.push(item);
+            return false;
+          }
+          return true;
+        });
+        
+        if (removedItems.length === 0) {
+          Logger.error('Cannot find items to remove from folder');
           State.draggedItem = null;
           return;
         }
         
-        // 从分组中移除
-        const item = folder.items.splice(actualIndex, 1)[0];
-        
-        // 🔑 关键修复：先添加到主列表末尾，再判断是否解散分组
-        // 这样可以确保无论哪个分支，item 都不会丢失
-        State.shortcuts.push(item);
+        // 先添加到主列表末尾，保持原顺序
+        removedItems.forEach(item => State.shortcuts.push(item));
         
         // 检查分组是否还有足够的项目
         const shouldDismissFolder = folder.items.length <= 1;
@@ -3919,6 +4028,7 @@ const ShortcutManager = {
         // 保存并重新渲染主列表
         await Storage.saveShortcuts();
         UI.renderShortcuts();
+        ShortcutManager.clearFolderSelection();
       }
     }
     
@@ -3931,6 +4041,7 @@ const ShortcutManager = {
     e.stopPropagation();
     
     if (!State.draggedItem || State.draggedItem.type !== 'folderItem') return;
+    if (State.draggedItem.isMulti) return;
     
     // 获取所有分组内的图标
     const folderGrid = document.getElementById('folderGrid');
@@ -4012,6 +4123,7 @@ const ShortcutManager = {
     e.stopPropagation();
     
     if (!State.draggedItem || State.draggedItem.type !== 'folderItem') return;
+    if (State.draggedItem.isMulti) return;
     
     const folderIndex = State.draggedItem.folderIndex;
     const folder = State.shortcuts[folderIndex];
@@ -5606,6 +5718,8 @@ const Settings = {
 const Events = {
   // 第一次聚焦标记（提升到外部作用域）
   isFirstFocus: true,
+  ignoreNextClear: false,
+  ignoreNextFolderClear: false,
 
   init() {
     this.setupSearch();
@@ -5680,6 +5794,8 @@ const Events = {
     const modal = Utils.getElement('addShortcutModal');
     const cancelBtn = Utils.getElement('cancelBtn');
     const saveBtn = Utils.getElement('saveBtn');
+    const shortcutsGrid = Utils.getElement('shortcutsGrid');
+    const shortcutsSection = document.querySelector('.shortcuts-section');
 
     if (addBtn) {
       addBtn.addEventListener('click', () => ShortcutManager.add());
@@ -5694,6 +5810,11 @@ const Events = {
     }
 
     document.addEventListener('click', (e) => {
+      if (this.ignoreNextClear || this.ignoreNextFolderClear) {
+        this.ignoreNextClear = false;
+        this.ignoreNextFolderClear = false;
+        return;
+      }
       if (e.shiftKey || e.ctrlKey || e.metaKey) return;
       const isShortcut = e.target.closest('.shortcut-item');
       const isFolderItem = e.target.closest('.folder-shortcut-item');
@@ -5736,13 +5857,111 @@ const Events = {
     this.setupIconUpload();
 
     // 为快捷方式网格添加拖拽区域支持(接收从分组拖出的项目)
-    const shortcutsGrid = Utils.getElement('shortcutsGrid');
     if (shortcutsGrid) {
       shortcutsGrid.addEventListener('dragover', (e) => {
         if (State.draggedItem && State.draggedItem.type === 'folderItem') {
           e.preventDefault();
           e.dataTransfer.dropEffect = 'move';
         }
+      });
+    }
+
+    if (shortcutsGrid && shortcutsSection) {
+      let isSelecting = false;
+      let selectionBox = null;
+      let startX = 0;
+      let startY = 0;
+      let initialSelected = new Set();
+      let hasMoved = false;
+
+      const applySelection = (nextSelected) => {
+        ShortcutManager.clearShortcutSelection();
+        nextSelected.forEach((id) => {
+          State.selectedShortcutIds.add(id);
+          const item = document.querySelector(`.shortcut-item[data-shortcut-id="${id}"]`);
+          if (item) item.classList.add('selected');
+        });
+        State.lastSelectedShortcutId = nextSelected.size
+          ? Array.from(nextSelected).pop()
+          : null;
+      };
+
+      const updateSelection = (currentX, currentY, keepExisting) => {
+        const left = Math.min(startX, currentX);
+        const right = Math.max(startX, currentX);
+        const top = Math.min(startY, currentY);
+        const bottom = Math.max(startY, currentY);
+
+        const selected = new Set();
+        document.querySelectorAll('.shortcut-item').forEach((item) => {
+          if (item.classList.contains('shortcut-add-btn')) return;
+          const rect = item.getBoundingClientRect();
+          const isHit = rect.right >= left &&
+            rect.left <= right &&
+            rect.bottom >= top &&
+            rect.top <= bottom;
+          if (isHit) {
+            selected.add(item.dataset.shortcutId);
+          }
+        });
+
+        const merged = keepExisting ? new Set([...initialSelected, ...selected]) : selected;
+        applySelection(merged);
+      };
+
+      const onMouseMove = (e) => {
+        if (!isSelecting || !selectionBox) return;
+        const sectionRect = shortcutsSection.getBoundingClientRect();
+        const currentX = e.clientX;
+        const currentY = e.clientY;
+        const left = Math.min(startX, currentX) - sectionRect.left;
+        const top = Math.min(startY, currentY) - sectionRect.top;
+        const width = Math.abs(currentX - startX);
+        const height = Math.abs(currentY - startY);
+        if (width > 3 || height > 3) {
+          hasMoved = true;
+        }
+        selectionBox.style.left = `${left}px`;
+        selectionBox.style.top = `${top}px`;
+        selectionBox.style.width = `${width}px`;
+        selectionBox.style.height = `${height}px`;
+
+        updateSelection(currentX, currentY, e.ctrlKey || e.metaKey || e.shiftKey);
+      };
+
+      const onMouseUp = () => {
+        if (!isSelecting) return;
+        isSelecting = false;
+        if (selectionBox) {
+          selectionBox.remove();
+          selectionBox = null;
+        }
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+        this.ignoreNextClear = hasMoved;
+        hasMoved = false;
+      };
+
+      shortcutsGrid.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        if (e.target.closest('.shortcut-item')) return;
+        const modalActive = Utils.getElement('addShortcutModal')?.classList.contains('active');
+        const settingsActive = Utils.getElement('settingsPanel')?.classList.contains('active');
+        if (modalActive || settingsActive) return;
+
+        e.preventDefault();
+        isSelecting = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        initialSelected = new Set(State.selectedShortcutIds);
+        hasMoved = false;
+
+        selectionBox = document.createElement('div');
+        selectionBox.className = 'selection-box';
+        shortcutsSection.appendChild(selectionBox);
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
       });
     }
   },
@@ -6353,6 +6572,7 @@ const Events = {
 
   setupFolder() {
     const folderModal = Utils.getElement('folderModal');
+    const folderGrid = Utils.getElement('folderGrid');
 
     // 点击背景关闭分组弹窗
     if (folderModal) {
@@ -6365,13 +6585,97 @@ const Events = {
       });
     }
 
-    // 点击模态框外部关闭
-    if (folderModal) {
-      folderModal.addEventListener('click', (e) => {
-        if (e.target === folderModal) {
-          UI.toggleFolderModal(false);
-          State.editingIndex = -1;
+    if (folderGrid && folderModal) {
+      let isSelecting = false;
+      let selectionBox = null;
+      let startX = 0;
+      let startY = 0;
+      let initialSelected = new Set();
+      let hasMoved = false;
+
+      const applySelection = (nextSelected) => {
+        ShortcutManager.clearFolderSelection();
+        nextSelected.forEach((id) => {
+          State.selectedFolderItemIds.add(id);
+          const item = document.querySelector(`.folder-shortcut-item[data-item-id="${id}"]`);
+          if (item) item.classList.add('selected');
+        });
+        State.lastSelectedFolderItemId = nextSelected.size
+          ? Array.from(nextSelected).pop()
+          : null;
+      };
+
+      const updateSelection = (currentX, currentY, keepExisting) => {
+        const left = Math.min(startX, currentX);
+        const right = Math.max(startX, currentX);
+        const top = Math.min(startY, currentY);
+        const bottom = Math.max(startY, currentY);
+
+        const selected = new Set();
+        document.querySelectorAll('.folder-shortcut-item').forEach((item) => {
+          const rect = item.getBoundingClientRect();
+          const isHit = rect.right >= left &&
+            rect.left <= right &&
+            rect.bottom >= top &&
+            rect.top <= bottom;
+          if (isHit) {
+            selected.add(item.dataset.itemId);
+          }
+        });
+
+        const merged = keepExisting ? new Set([...initialSelected, ...selected]) : selected;
+        applySelection(merged);
+      };
+
+      const onMouseMove = (e) => {
+        if (!isSelecting || !selectionBox) return;
+        const gridRect = folderGrid.getBoundingClientRect();
+        const currentX = e.clientX;
+        const currentY = e.clientY;
+        const left = Math.min(startX, currentX) - gridRect.left;
+        const top = Math.min(startY, currentY) - gridRect.top;
+        const width = Math.abs(currentX - startX);
+        const height = Math.abs(currentY - startY);
+        if (width > 3 || height > 3) {
+          hasMoved = true;
         }
+        selectionBox.style.left = `${left}px`;
+        selectionBox.style.top = `${top}px`;
+        selectionBox.style.width = `${width}px`;
+        selectionBox.style.height = `${height}px`;
+
+        updateSelection(currentX, currentY, e.ctrlKey || e.metaKey || e.shiftKey);
+      };
+
+      const onMouseUp = () => {
+        if (!isSelecting) return;
+        isSelecting = false;
+        if (selectionBox) {
+          selectionBox.remove();
+          selectionBox = null;
+        }
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+        this.ignoreNextFolderClear = hasMoved;
+        hasMoved = false;
+      };
+
+      folderGrid.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        if (e.target.closest('.folder-shortcut-item')) return;
+        e.preventDefault();
+        isSelecting = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        initialSelected = new Set(State.selectedFolderItemIds);
+        hasMoved = false;
+
+        selectionBox = document.createElement('div');
+        selectionBox.className = 'selection-box';
+        folderGrid.appendChild(selectionBox);
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
       });
     }
   },

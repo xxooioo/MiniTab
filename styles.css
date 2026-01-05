@@ -394,6 +394,7 @@ body {
   max-width: 1400px;
   animation: fadeIn 0.3s ease-in 0.1s backwards;
   margin-bottom: 40px;
+  position: relative;
 }
 
 .shortcut-add-btn {
@@ -430,6 +431,15 @@ body {
   margin: 0 auto;
   justify-content: center;
   padding: 0 20px;
+}
+
+.selection-box {
+  position: absolute;
+  border: 1px solid rgba(var(--primary-rgb), 0.8);
+  background: rgba(var(--primary-rgb), 0.15);
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 50;
 }
 
 .shortcut-item {
@@ -691,6 +701,7 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
   justify-items: center;
+  position: relative;
 }
 
 .folder-shortcut-item {
