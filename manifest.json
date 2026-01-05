@@ -10,6 +10,9 @@
     "scripting",
     "bookmarks"
   ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "action": {
     "default_popup": "popup.html",
     "default_title": "添加到标签页",

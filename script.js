@@ -344,21 +344,6 @@ const Toast = new ToastManager();
 
 // ==================== 工具函数 ====================
 const Utils = {
-  // 尝试从 URL 获取图标（通过常见路径）
-  async getIconFromUrl(url) {
-    try {
-      const urlObj = new URL(url);
-      const origin = urlObj.origin;
-      
-      // 返回最常见的 favicon 路径，让浏览器尝试加载
-      // 如果不存在，渲染时的 onerror 处理会回退到 Google API
-      return new URL('/favicon.ico', origin).href;
-    } catch (error) {
-      Logger.debug('从 URL 获取图标失败:', error);
-    }
-    return null;
-  },
-
   // 获取 Favicon URL（优先使用浏览器缓存）
   getFaviconUrl(url) {
     try {
@@ -367,12 +352,12 @@ const Utils = {
           typeof location !== 'undefined' && location.protocol === 'chrome-extension:') {
         const base = chrome.runtime.getURL('_favicon/');
         return `${base}?pageUrl=${encodeURIComponent(pageUrl)}&size=128`;
-      }
-      return `chrome://favicon2/?size=128&scale=1&pageUrl=${encodeURIComponent(pageUrl)}`;
-    } catch {
-      return Utils.getDefaultIconData();
     }
-  },
+    return `chrome://favicon2/?size=128&scale=1&pageUrl=${encodeURIComponent(pageUrl)}`;
+  } catch {
+    return Utils.getDefaultIconData();
+  }
+},
 
   // 获取 Favicon URL（外网兜底）
   getGoogleFaviconUrl(url) {
@@ -387,6 +372,11 @@ const Utils = {
   // 默认占位图标（SVG）
   getDefaultIconData() {
     return 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23ffffff"><circle cx="12" cy="12" r="10"/></svg>';
+  },
+
+  // 判断是否为内嵌图标
+  isDataIcon(icon) {
+    return typeof icon === 'string' && icon.startsWith('data:image');
   },
 
   // 生成文字图标（SVG）
@@ -828,6 +818,271 @@ const Storage = {
   }
 };
 
+// ==================== 图标缓存管理 ====================
+const IconCacheManager = {
+  inFlight: new Map(),
+  attemptMap: new Map(),
+  queue: [],
+  activeCount: 0,
+  maxConcurrent: 3,
+  saveTimer: null,
+  isConvertingAll: false,
+  statsCache: null,
+  statsCacheTime: 0,
+  preloadImages: new Set(),
+
+  isImageUrl(url) {
+    return typeof url === 'string' && url.length > 0;
+  },
+
+  shouldAttempt(shortcut, iconUrl) {
+    const id = Utils.ensureShortcutId(shortcut);
+    const key = iconUrl || '';
+    const lastKey = this.attemptMap.get(id);
+    if (lastKey === key) return false;
+    this.attemptMap.set(id, key);
+    return true;
+  },
+
+  scheduleSave() {
+    if (this.saveTimer) return;
+    this.saveTimer = cleanupManager.setTimeout(() => {
+      this.saveTimer = null;
+      Storage.saveTabs();
+    }, 800);
+  },
+
+  async fetchAsDataUrl(url) {
+    if (!this.isImageUrl(url) || Utils.isDataIcon(url)) return url;
+    if (this.inFlight.has(url)) {
+      return this.inFlight.get(url);
+    }
+
+    const promise = (async () => {
+      try {
+        const response = await fetch(url, { credentials: 'omit' });
+        if (!response.ok) return null;
+        const blob = await response.blob();
+        if (!blob || !blob.type || !blob.type.startsWith('image/')) {
+          return null;
+        }
+        return await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            resolve(typeof reader.result === 'string' ? reader.result : null);
+          };
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(blob);
+        });
+      } catch (error) {
+        Logger.warn('Fetch icon failed:', url, error);
+        return null;
+      }
+    })();
+
+    this.inFlight.set(url, promise);
+    try {
+      return await promise;
+    } finally {
+      this.inFlight.delete(url);
+    }
+  },
+
+  async cacheIconForShortcut(shortcut, iconUrl) {
+    if (!shortcut || !this.isImageUrl(iconUrl)) return;
+    if (iconUrl === Utils.getDefaultIconData()) return;
+    if (Utils.isDataIcon(shortcut.icon)) return;
+    if (!this.shouldAttempt(shortcut, iconUrl)) return;
+    const dataUrl = await this.fetchAsDataUrl(iconUrl);
+    if (!dataUrl || !Utils.isDataIcon(dataUrl)) return;
+    if (Utils.isDataIcon(shortcut.icon)) return;
+    shortcut.icon = dataUrl;
+    this.scheduleSave();
+  },
+
+  enqueue(task) {
+    this.queue.push(task);
+    this.runQueue();
+  },
+
+  runQueue() {
+    while (this.activeCount < this.maxConcurrent && this.queue.length > 0) {
+      const task = this.queue.shift();
+      this.activeCount += 1;
+      task().finally(() => {
+        this.activeCount -= 1;
+        if (this.activeCount === 0 && this.queue.length === 0) {
+          this.isConvertingAll = false;
+        }
+        this.runQueue();
+      });
+    }
+  },
+
+  preloadIconForItem(item) {
+    if (!item || Utils.isDataIcon(item.icon)) return;
+    const urls = [];
+    if (this.isImageUrl(item.icon)) {
+      urls.push(item.icon);
+    }
+    const faviconUrl = Utils.getFaviconUrl(item.url);
+    if (this.isImageUrl(faviconUrl)) {
+      urls.push(faviconUrl);
+    }
+    const googleUrl = Utils.getGoogleFaviconUrl(item.url);
+    if (this.isImageUrl(googleUrl)) {
+      urls.push(googleUrl);
+    }
+    if (urls.length === 0) return;
+
+    const img = new Image();
+    this.preloadImages.add(img);
+    let timeoutId = null;
+    const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      this.preloadImages.delete(img);
+    };
+    const tryLoad = (index) => {
+      if (index >= urls.length) {
+        cleanup();
+        return;
+      }
+      const url = urls[index];
+      img.onload = () => {
+        if (img.naturalWidth > 1 && img.naturalHeight > 1) {
+          this.cacheIconForShortcut(item, img.currentSrc || img.src);
+          cleanup();
+          return;
+        }
+        tryLoad(index + 1);
+      };
+      img.onerror = () => {
+        tryLoad(index + 1);
+      };
+      img.src = url;
+    };
+    timeoutId = setTimeout(() => {
+      cleanup();
+    }, 7000);
+    tryLoad(0);
+  },
+
+  preloadAllShortcutIcons(tabs) {
+    if (!Array.isArray(tabs)) return;
+    tabs.forEach(tab => {
+      (tab.shortcuts || []).forEach(shortcut => {
+        if (shortcut.type === 'folder') {
+          if (Array.isArray(shortcut.items)) {
+            shortcut.items.forEach(item => this.preloadIconForItem(item));
+          }
+          return;
+        }
+        this.preloadIconForItem(shortcut);
+      });
+    });
+  },
+
+  async getDataIconStats() {
+    const now = Date.now();
+    if (this.statsCache && (now - this.statsCacheTime) < 3000) {
+      return this.statsCache;
+    }
+    const result = await Storage.get(['tabs']);
+    const tabs = result.tabs || [];
+    let dataIconCount = 0;
+    let nonDataIconCount = 0;
+    let totalChars = 0;
+
+    const collect = (icon) => {
+      if (!icon) return;
+      if (Utils.isDataIcon(icon)) {
+        dataIconCount += 1;
+        totalChars += icon.length;
+      } else {
+        nonDataIconCount += 1;
+      }
+    };
+
+    tabs.forEach(tab => {
+      (tab.shortcuts || []).forEach(shortcut => {
+        collect(shortcut.icon);
+        if (shortcut.type === 'folder' && Array.isArray(shortcut.items)) {
+          shortcut.items.forEach(item => collect(item.icon));
+        }
+      });
+    });
+
+    const approxBytes = Math.floor(totalChars * 0.75);
+    const stats = {
+      dataIconCount,
+      nonDataIconCount,
+      totalChars,
+      approxBytes,
+      approxKB: Math.round(approxBytes / 1024),
+      approxMB: (approxBytes / 1024 / 1024).toFixed(2)
+    };
+    this.statsCache = stats;
+    this.statsCacheTime = now;
+    return stats;
+  },
+
+  formatStatsText(stats) {
+    return `base64 图标：${stats.dataIconCount} 个，约 ${stats.approxMB} MB（非 base64：${stats.nonDataIconCount} 个）`;
+  },
+
+  async getNonDataIconList() {
+    const result = await Storage.get(['tabs']);
+    const tabs = result.tabs || [];
+    const list = [];
+
+    const addLine = (label, name, icon) => {
+      if (!icon || Utils.isDataIcon(icon)) return;
+      const safeName = name || 'unnamed';
+      list.push(`[${label}] ${safeName}`);
+    };
+
+    tabs.forEach(tab => {
+      const tabLabel = `tab:${tab.name || 'tab'}`;
+      (tab.shortcuts || []).forEach(shortcut => {
+        if (shortcut.type === 'folder' && Array.isArray(shortcut.items)) {
+          const folderLabel = `${tabLabel} folder:${shortcut.name || 'folder'}`;
+          shortcut.items.forEach(item => {
+            addLine(folderLabel, item.name, item.icon);
+          });
+        } else {
+          addLine(tabLabel, shortcut.name, shortcut.icon);
+        }
+      });
+    });
+
+    return list;
+  },
+
+  async updateStatsDisplay() {
+    const statsEl = Utils.getElement('iconCacheStatsValue');
+    if (!statsEl) return;
+    statsEl.textContent = '统计中...';
+    const stats = await this.getDataIconStats();
+    const text = this.formatStatsText(stats);
+    statsEl.textContent = text;
+  },
+
+  async updateNonDataListDisplay() {
+    const listEl = Utils.getElement('iconCacheNonDataList');
+    if (!listEl) return;
+    listEl.value = '加载中...';
+    const list = await this.getNonDataIconList();
+    if (list.length === 0) {
+      listEl.value = '全部图标已转为 base64。';
+      return;
+    }
+    listEl.value = list.join('\n');
+  }
+};
+
 // ==================== UI 渲染 ====================
 const UI = {
   // 渲染标签页列表
@@ -979,8 +1234,9 @@ const UI = {
           miniIcon.draggable = false; // 防止图片阻止拖动
           const itemUrl = items[i].url;
           const originalMiniIcon = items[i].icon;
-          const miniIconIsData = originalMiniIcon && originalMiniIcon.startsWith('data:image');
-          miniIcon.src = miniIconIsData ? originalMiniIcon : Utils.getFaviconUrl(itemUrl);
+          const miniIconIsData = Utils.isDataIcon(originalMiniIcon);
+          const miniIconFallbackUrl = Utils.getFaviconUrl(itemUrl);
+          miniIcon.src = miniIconIsData ? originalMiniIcon : (originalMiniIcon || miniIconFallbackUrl);
           let miniIconTimeout = null;
           const scheduleMiniIconTimeout = () => {
             if (miniIconTimeout) {
@@ -1029,7 +1285,9 @@ const UI = {
             }
             if (miniIcon.naturalWidth <= 1 || miniIcon.naturalHeight <= 1) {
               miniIconFallback();
+              return;
             }
+            IconCacheManager.cacheIconForShortcut(items[i], miniIcon.currentSrc || miniIcon.src);
           };
           folderIcon.appendChild(miniIcon);
         }
@@ -1122,8 +1380,9 @@ const UI = {
         icon.alt = shortcut.name;
         icon.draggable = false; // 防止图片阻止拖动
         const originalIcon = shortcut.icon;
-        const iconIsData = originalIcon && originalIcon.startsWith('data:image');
-        icon.src = iconIsData ? originalIcon : Utils.getFaviconUrl(shortcut.url);
+        const iconIsData = Utils.isDataIcon(originalIcon);
+        const iconFallbackUrl = Utils.getFaviconUrl(shortcut.url);
+        icon.src = iconIsData ? originalIcon : (originalIcon || iconFallbackUrl);
         let iconTimeout = null;
         const scheduleIconTimeout = () => {
           if (iconTimeout) {
@@ -1172,7 +1431,9 @@ const UI = {
           }
           if (icon.naturalWidth <= 1 || icon.naturalHeight <= 1) {
             iconFallback();
+            return;
           }
+          IconCacheManager.cacheIconForShortcut(shortcut, icon.currentSrc || icon.src);
         };
 
         const name = document.createElement('div');
@@ -1482,8 +1743,9 @@ const UI = {
       icon.alt = item.name;
       icon.draggable = false; // 防止图片阻止拖动
       const originalFolderIcon = item.icon;
-      const folderIconIsData = originalFolderIcon && originalFolderIcon.startsWith('data:image');
-      icon.src = folderIconIsData ? originalFolderIcon : Utils.getFaviconUrl(item.url);
+      const folderIconIsData = Utils.isDataIcon(originalFolderIcon);
+      const folderIconFallbackUrl = Utils.getFaviconUrl(item.url);
+      icon.src = folderIconIsData ? originalFolderIcon : (originalFolderIcon || folderIconFallbackUrl);
       let folderIconTimeout = null;
       const scheduleFolderIconTimeout = () => {
         if (folderIconTimeout) {
@@ -1532,7 +1794,9 @@ const UI = {
         }
         if (icon.naturalWidth <= 1 || icon.naturalHeight <= 1) {
           folderIconFallback();
+          return;
         }
+        IconCacheManager.cacheIconForShortcut(item, icon.currentSrc || icon.src);
       };
       
       const name = document.createElement('div');
@@ -1654,6 +1918,7 @@ const TabManager = {
     Utils.ensureShortcutIds(State.shortcuts);
     
     UI.renderShortcuts();
+    IconCacheManager.preloadAllShortcutIcons(State.tabs);
   },
 
   async switchTab(tabId) {
@@ -2282,7 +2547,7 @@ const ShortcutManager = {
       return;
     }
 
-    // 如果没有手动输入图标，使用 Google Favicon API
+    // 如果没有手动输入图标，使用浏览器 favicon 缓存
     let iconUrl = icon;
     if (!iconUrl) {
       iconUrl = Utils.getFaviconUrl(validUrl);
@@ -6070,6 +6335,20 @@ const Events = {
       });
     }
 
+    const iconCacheStatsBtn = Utils.getElement('iconCacheStatsBtn');
+    if (iconCacheStatsBtn) {
+      iconCacheStatsBtn.addEventListener('click', () => {
+        IconCacheManager.updateStatsDisplay();
+      });
+    }
+
+    const iconCacheNonDataBtn = Utils.getElement('iconCacheNonDataBtn');
+    if (iconCacheNonDataBtn) {
+      iconCacheNonDataBtn.addEventListener('click', () => {
+        IconCacheManager.updateNonDataListDisplay();
+      });
+    }
+
   },
 
   setupFolder() {
@@ -6233,6 +6512,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   Logger.debug('Storage changed:', changes);
   
   let needsUpdate = false;
+  let tabsChanged = false;
   
   // 检查标签页数据是否变化
   if (changes.tabs) {
@@ -6250,6 +6530,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     }
     
     needsUpdate = true;
+    tabsChanged = true;
   }
   
   // ⚠️ 不同步 currentTabId - 每个页面保持自己的当前标签页
@@ -6306,6 +6587,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     // 重新渲染标签页和快捷方式
     UI.renderTabs();
     UI.renderShortcuts();
+    if (tabsChanged) {
+      IconCacheManager.preloadAllShortcutIcons(State.tabs);
+    }
     
     // 如果背景设置变化，重新应用背景
     if (changes.background) {

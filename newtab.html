@@ -206,6 +206,15 @@
           </div>
           <p class="setting-description">备份或恢复你的所有设置以及标签页和快捷方式数据。导出书签会生成可导入浏览器的 HTML 文件。</p>
         </div>
+        <div class="setting-group">
+          <span class="setting-label">图标缓存统计</span>
+          <div class="background-options">
+            <button class="btn btn-secondary" id="iconCacheStatsBtn">查看统计</button>
+            <button class="btn btn-secondary" id="iconCacheNonDataBtn">查看非 base64 列表</button>
+          </div>
+          <p class="setting-description" id="iconCacheStatsValue">点击查看当前 base64 图标占用。</p>
+          <textarea class="icon-cache-list" id="iconCacheNonDataList" readonly placeholder="非 base64 图标列表会显示在这里"></textarea>
+        </div>
       </div>
     </div>
   </div>
