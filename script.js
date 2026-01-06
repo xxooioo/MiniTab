@@ -6159,12 +6159,12 @@ const Events = {
   setupTabs() {
     // 全局滚轮切换标签页
     let wheelTimeout = null;
-    let accumulatedDelta = 0;
     let hideTimeout = null;
-    let lastDirection = 0; // 记录上次的滚动方向
-    let bottomReadyTimeout = null;
-    let bottomReady = false;
-    const threshold = 150; // 累积阈值，避免触摸板微小滚动触发
+    let edgeAccumulated = 0;
+    let edgeDirection = 0;
+    let edgeLastTimestamp = 0;
+    const edgeThreshold = 40; // 在边缘时的累积阈值，避免误触
+    const edgeResetMs = 200; // 边缘滚动停顿后重置累积
     const cooldownMs = 600; // 冷却时间，防止一次手势翻多页
     const tabsSidebar = document.querySelector('.tabs-sidebar');
     
@@ -6203,84 +6203,62 @@ const Events = {
         return;
       }
       
-      // 检查页面是否滚动到底部
+      // 检查页面是否滚动到顶部/底部
       const container = document.querySelector('.container');
       let isAtBottom = false;
+      let isAtTop = false;
+      let canScroll = false;
       if (container) {
         const scrollTop = container.scrollTop;
         const scrollHeight = container.scrollHeight;
         const clientHeight = container.clientHeight;
+        const scrollableHeight = scrollHeight - clientHeight;
+        canScroll = scrollableHeight > 1;
         // 允许1px的误差，因为有些情况下可能不会完全相等
         isAtBottom = scrollHeight - scrollTop - clientHeight <= 1;
+        isAtTop = scrollTop <= 1;
       } else {
         // 如果没有container，使用window的滚动位置
         const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
         const scrollHeight = document.documentElement.scrollHeight;
         const clientHeight = window.innerHeight;
+        const scrollableHeight = scrollHeight - clientHeight;
+        canScroll = scrollableHeight > 1;
         isAtBottom = scrollHeight - scrollTop - clientHeight <= 1;
+        isAtTop = scrollTop <= 1;
       }
       
-      // 如果还没到底部，允许正常滚动，不切换标签页
-      if (!isAtBottom) {
-        // 重置累积量，防止快速滚动后立即切换
-        accumulatedDelta = 0;
-        lastDirection = 0;
-        bottomReady = false;
-        if (bottomReadyTimeout) {
-          clearTimeout(bottomReadyTimeout);
-          bottomReadyTimeout = null;
-        }
-        if (wheelTimeout) {
-          clearTimeout(wheelTimeout);
-          wheelTimeout = null;
-        }
+      const currentDirection = e.deltaY > 0 ? 1 : -1;
+      const isAtEdge = !canScroll || (currentDirection > 0 ? isAtBottom : isAtTop);
+
+      // 如果还没到对应边缘，允许正常滚动，不切换标签页
+      if (!isAtEdge) {
+        edgeAccumulated = 0;
+        edgeDirection = 0;
+        edgeLastTimestamp = 0;
         return; // 允许正常滚动
       }
 
-      if (!bottomReady) {
-        if (bottomReadyTimeout) {
-          clearTimeout(bottomReadyTimeout);
-        }
-        bottomReadyTimeout = setTimeout(() => {
-          bottomReady = true;
-        }, 300);
-        return;
-      }
-      
-      // 已经到底部，可以切换标签页
-      // 检测方向改变
-      const currentDirection = e.deltaY > 0 ? 1 : -1;
-      
-      // 如果方向改变，完全重置
-      if (lastDirection !== 0 && currentDirection !== lastDirection) {
-        accumulatedDelta = 0;
-        lastDirection = currentDirection;
-        // 清除防抖定时器，允许立即响应新方向
-        if (wheelTimeout) {
-          clearTimeout(wheelTimeout);
-          wheelTimeout = null;
-        }
-      }
-      
-      lastDirection = currentDirection;
-      
       // 防抖处理，避免切换过快
       if (wheelTimeout) {
-        // 在防抖期间不累积，直接返回
         return;
       }
-      
-      // 累积滚动量
-      accumulatedDelta += e.deltaY;
-      
-      // 达到阈值才切换
-      if (Math.abs(accumulatedDelta) >= threshold) {
-        TabManager.switchByWheel(accumulatedDelta);
-        accumulatedDelta = 0; // 重置累积量
-        
+
+      const now = Date.now();
+      if (edgeDirection !== currentDirection || (edgeLastTimestamp && now - edgeLastTimestamp > edgeResetMs)) {
+        edgeAccumulated = 0;
+        edgeDirection = currentDirection;
+      }
+
+      edgeLastTimestamp = now;
+      edgeAccumulated += Math.abs(e.deltaY);
+
+      if (edgeAccumulated >= edgeThreshold) {
+        TabManager.switchByWheel(currentDirection);
+        edgeAccumulated = 0;
         wheelTimeout = setTimeout(() => {
           wheelTimeout = null;
-        }, cooldownMs); // 冷却时间内只能切换一次
+        }, cooldownMs);
       }
     }, { passive: true }); // 使用 passive: true，不阻止默认行为，兼容 macOS
   },
