@@ -4768,6 +4768,44 @@ const ShortcutManager = {
         setTimeout(() => this.openFolder(folderIndex), 100);
       }
     });
+  },
+
+  async deleteSelectedFromFolder(folderIndex, itemIds) {
+    const previousState = JSON.parse(JSON.stringify(State.shortcuts));
+    const folder = State.shortcuts[folderIndex];
+    if (!folder || folder.type !== 'folder') return;
+
+    const idSet = new Set(itemIds);
+    folder.items = folder.items.filter((item) => !idSet.has(Utils.ensureShortcutId(item)));
+
+    if (folder.items.length <= 1) {
+      const remainingItem = folder.items[0];
+      if (remainingItem) {
+        State.shortcuts[folderIndex] = remainingItem;
+      } else {
+        State.shortcuts.splice(folderIndex, 1);
+      }
+      State.editingIndex = -1;
+      State.editingFolderItemIndex = -1;
+      UI.toggleFolderModal(false);
+    } else {
+      State.editingIndex = folderIndex;
+      UI.renderFolderContent(folder);
+    }
+
+    await Storage.saveShortcuts();
+    UI.renderShortcuts();
+    this.clearFolderSelection();
+
+    Utils.showUndoToast(`已删除 ${itemIds.length} 个图标`, async () => {
+      State.shortcuts = previousState;
+      await Storage.saveShortcuts();
+      UI.renderShortcuts();
+      const currentFolder = State.shortcuts[folderIndex];
+      if (currentFolder && currentFolder.type === 'folder') {
+        setTimeout(() => this.openFolder(folderIndex), 100);
+      }
+    });
   }
 };
 
@@ -4983,40 +5021,6 @@ const BackupManager = {
     }
   },
 
-  async deleteSelectedFromFolder(folderIndex, itemIds) {
-    const previousState = JSON.parse(JSON.stringify(State.shortcuts));
-    const folder = State.shortcuts[folderIndex];
-    if (!folder || folder.type !== 'folder') return;
-
-    const idSet = new Set(itemIds);
-    folder.items = folder.items.filter((item) => !idSet.has(Utils.ensureShortcutId(item)));
-
-    if (folder.items.length <= 1) {
-      const remainingItem = folder.items[0];
-      if (remainingItem) {
-        State.shortcuts[folderIndex] = remainingItem;
-      } else {
-        State.shortcuts.splice(folderIndex, 1);
-      }
-      State.editingIndex = -1;
-      State.editingFolderItemIndex = -1;
-      UI.toggleFolderModal(false);
-    } else {
-      State.editingIndex = folderIndex;
-      UI.renderFolderContent(folder);
-    }
-
-    await Storage.saveShortcuts();
-    UI.renderShortcuts();
-    this.clearFolderSelection();
-
-    Utils.showUndoToast(`已删除 ${itemIds.length} 个图标`, async () => {
-      State.shortcuts = previousState;
-      await Storage.saveShortcuts();
-      UI.renderShortcuts();
-    });
-  },
-  
   // 显示导入方式选择对话框
   showImportModeDialog(backupData, validTabs) {
     return new Promise((resolve) => {
